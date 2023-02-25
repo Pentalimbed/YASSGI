@@ -1,5 +1,7 @@
 #include "ReShade.fxh"
 
+#include "Poisson.fxh"
+
 #ifndef YASSGI_RENDER_SCALE
 #   define YASSGI_RENDER_SCALE 0.5
 #endif
@@ -20,35 +22,34 @@ namespace YASSGI{
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Buffers
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-
-texture BlueNoiseTex < source = "dh_rt_noise.png"; > { Width = NOISE_SIZE; Height = NOISE_SIZE; MipLevels = 1; Format = RGBA8; };
-sampler BlueNoiseTexSampler                          { Texture = BlueNoiseTex; AddressU = REPEAT; AddressV = REPEAT; AddressW = REPEAT; };
-
 texture ZTex	    { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = R16F; MipLevels = YASSGI_MIP_LEVEL; };
 sampler ZTexSampler { Texture = ZTex; };
 
-texture NormalTex	     { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; };
-sampler NormalTexSampler { Texture = NormalTex; };
+texture ZPrevTex	    { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = R16F; MipLevels = YASSGI_MIP_LEVEL; };
+sampler ZPrevTexSampler { Texture = ZPrevTex; };
 
 texture GITex	     { Width = YASSGI_BUFFER_WIDTH; Height = YASSGI_BUFFER_HEIGHT; Format = RGBA16F; };
 sampler GITexSampler { Texture = GITex; };
+
+texture GIAccumTex        { Width = YASSGI_BUFFER_WIDTH; Height = YASSGI_BUFFER_HEIGHT; Format = RGBA16F; };
+sampler GIAccumTexSampler { Texture = GIAccumTex; };
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Uniform Varibales
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-// Matrix src: https://www.shadertoy.com/view/WltSRB
-static const float3x3 sRGBtoAP1 = float3x3
+// @source https://www.shadertoy.com/view/WltSRB
+static const float3x3 sRGBtoXYZ = float3x3
 (
-	0.613097, 0.339523, 0.047379,
-	0.070194, 0.916354, 0.013452,
-	0.020616, 0.109570, 0.869815
+	0.4124564, 0.3575761, 0.1804375,
+    0.2126729, 0.7151522, 0.0721750,
+    0.0193339, 0.1191920, 0.9503041
 );
-static const float3x3 AP1toSRGB = float3x3
+static const float3x3 XYZtoSRGB = float3x3
 (
-     1.704859, -0.621715, -0.083299,
-    -0.130078,  1.140734, -0.010560,
-    -0.023964, -0.128975,  1.153013
+    3.2404542, -1.5371385, -0.4985314,
+    -0.9692660, 1.8760108, 0.0415560,
+    0.0556434, -0.2040259, 1.0572252
 );
 
 uniform int   RANDOM < source = "random"; min = 0; max = 1 << 15; >;
@@ -58,19 +59,14 @@ uniform float FRAMETIME   < source = "frametime";  >;
 uniform int iDebugView <
 	ui_type = "combo";
     ui_label = "Debug View";
-    ui_items = "None\0Initial Sample\0";
+    ui_items = "None\0Initial Sample\0Hit Intensity\0Accumulated GI\0";
 > = 0;
 
-uniform int iInputColorSpace <
-	ui_type = "combo";
-    ui_label = "Input Color Space";
-    ui_items = "sRGB\0";
-	ui_category = "Color";
-> = 0;
+// <---- Depth and Normal ---->
 
 uniform int iVerticalFOV <
     ui_type = "slider";
-    ui_category = "Depth";
+    ui_category = "Depth & Normal";
     ui_label = "Vertical FOV";
     ui_min = 60; ui_max = 140;
     ui_step = 1;
@@ -78,11 +74,13 @@ uniform int iVerticalFOV <
 
 uniform float2 fDepthRange <
     ui_type = "slider";
-    ui_category = "Depth";
+    ui_category = "Depth & Normal";
     ui_label = "Depth Range";
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.001;
 > = float2(0.0, 0.999);
+
+// <---- Tracing ---->
 
 uniform int iRayAmount <
     ui_type = "slider";
@@ -90,7 +88,7 @@ uniform int iRayAmount <
     ui_label = "Ray Amount";
     ui_min = 1; ui_max = 32;
     ui_step = 1;
-> = 2;
+> = 3;
 
 uniform int iMaxRayStep <
     ui_type = "slider";
@@ -98,15 +96,15 @@ uniform int iMaxRayStep <
     ui_label = "Max Ray Step";
     ui_min = 1; ui_max = 40;
     ui_step = 1;
-> = 20;
+> = 16;
 
 uniform float fBaseStride <
     ui_type = "slider";
     ui_category = "Tracing";
     ui_label = "Base Stride";
-    ui_min = 0.0; ui_max = 10.0;
-    ui_step = 0.1;
-> = 2.0;
+    ui_min = 0.0; ui_max = 4.0;
+    ui_step = 0.01;
+> = 0.3;
 
 uniform float fStrideJitter <
     ui_type = "slider";
@@ -114,7 +112,7 @@ uniform float fStrideJitter <
     ui_label = "Stride Jitter";
     ui_min = 0.0; ui_max = 0.9;
     ui_step = 0.01;
-> = 0.4;
+> = 0.2;
 
 uniform float fSpreadStep <
     ui_type = "slider";
@@ -130,20 +128,47 @@ uniform float fZThickness <
     ui_label = "Z Thickness";
     ui_min = 0.0; ui_max = 10.0;
     ui_step = 0.1;
-> = 2.0;
+> = 0.4;
 
 uniform bool bBackfaceLighting <
     ui_label = "Backface Lighting";
     ui_category = "Tracing";
 > = false;
 
+// <---- Denoising ---->
+
+uniform float fAccumMult <
+    ui_type = "slider";
+    ui_category = "Denoising";
+    ui_label = "Accumulation Multiplier";
+    ui_min = 0.1; ui_max = 10.0;
+    ui_step = 0.1;
+> = 4.0;
+
+// <---- Color & Mixing ---->
+
+uniform int iInputColorSpace <
+	ui_type = "combo";
+    ui_label = "Input Color Space";
+    ui_items = "sRGB\0";
+	ui_category = "Color & Mixing";
+> = 0;
+
 uniform float3 fAmbientLight <
     ui_type = "color";
-    ui_category = "Environment";
+    ui_category = "Color & Mixing";
     ui_label = "Ambient Light";
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.1;
 > = 0.0;
+
+uniform float fMixMult <
+    ui_type = "slider";
+    ui_category = "Color & Mixing";
+    ui_label = "Mix Strength";
+    ui_min = 0.1; ui_max = 10.0;
+    ui_step = 0.1;
+> = 4.0;
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Vertex Shader
@@ -181,6 +206,8 @@ VSOUT VS_YASSGI(in uint id : SV_VertexID)
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Functions
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+// <---- Depth and Normal ---->
 
 float z2Depth(in float z){ return (z - 1.0) * rcp(RESHADE_DEPTH_LINEARIZATION_FAR_PLANE); }
 float depth2Z(in float depth){ return depth * RESHADE_DEPTH_LINEARIZATION_FAR_PLANE + 1.0; }
@@ -226,10 +253,6 @@ bool isInScreen(in float2 coord)
 {
     return coord.x > 0.0 && coord.x < 1.0 && coord.y > 0.0 && coord.y < 1.0;
 }
-bool isInScreen(in float3 world_pos, in VSOUT vsout)
-{
-    return isInScreen(worldPos2Coords(world_pos, vsout));
-}
 bool isNear(in float world_z)
 {
     return world_z < depth2Z(fDepthRange.x);
@@ -239,7 +262,9 @@ bool isSky(in float world_z)
     return world_z > depth2Z(fDepthRange.y);
 }
 
-// https://www.ronja-tutorials.com/post/024-white-noise/#:~:text=For%20many%20effects%20we%20want%20random%20numbers%20to,other%20tutorials%2C%20for%20example%20perlin%20and%20voronoi%20noise.
+// <---- Random and Sampling ---->
+
+/// @source https://www.ronja-tutorials.com/post/024-white-noise/#:~:text=For%20many%20effects%20we%20want%20random%20numbers%20to,other%20tutorials%2C%20for%20example%20perlin%20and%20voronoi%20noise.
 float rand4dTo1d(float4 value, float4 dotDir)
 {
     //make value smaller to avoid artefacts
@@ -258,17 +283,26 @@ float3 rand4dTo3d(float4 value){
     );
 }
 
-float3 uniformHemisphere(float ep0, float ep1)
+/// @source http://blog.selfshadow.com/publications/s2013-shading-course/karis/s2013_pbs_epic_notes_v2.pdf
+float3 uniformHemisphere(float2 rand, float3 normal)
 {
-    float theta = acos(ep0);
-    float phi = 2 * PI * ep1;
-    return float3(cos(phi) * sin(theta), sin(phi) * sin(theta), ep0);
+    float cos_theta = rand.x;
+    float sin_theta = sqrt(1 - cos_theta * cos_theta);
+    float phi = 2 * PI * rand.y;
+
+    float3 h = float3(cos(phi) * sin_theta, sin(phi) * sin_theta, cos_theta);
+    float3 up_vec = abs(normal.z) < 0.999 ? float3(0, 0, 1) : float3(1, 0, 0);
+    float3 tan_x = normalize(cross(up_vec, normal));
+    float3 tan_y = cross(normal, tan_x);
+    return normalize(tan_x * h.x + tan_y * h.y + normal * h.z);
 }
+
+// <---- Tracing ---->
 
 // Simple tracer
 // you can control stride by providing a non-unit ray_dir
 // hit: 0-hit nothing; 1-hit and valid; 2-hit and invalid;
-void traceRay(in float3 ray_orig, in float3 ray_dir, in VSOUT vsout, out int hit, out float3 hit_pos, out float mip_level)
+void traceRay(float3 ray_orig, float3 ray_dir, VSOUT vsout, out int hit, out float3 hit_pos, out float mip_level)
 {
     hit = 0;
     hit_pos = 0.0;
@@ -279,7 +313,9 @@ void traceRay(in float3 ray_orig, in float3 ray_dir, in VSOUT vsout, out int hit
     
     float3 stride = ray_dir * fBaseStride;
     float3 old_pos = ray_orig + stride * 0.008;
-    for(int step = 0; step < iMaxRayStep; ++step)
+
+    [loop]
+    for(int step = 0; step < iMaxRayStep; step++)
     {
         mip_level = min(float(step) / fSpreadStep, YASSGI_MIP_LEVEL);
         float len_mult = pow(2, mip_level);
@@ -287,62 +323,68 @@ void traceRay(in float3 ray_orig, in float3 ray_dir, in VSOUT vsout, out int hit
         float2 new_coord = worldPos2Coords(new_pos, vsout);
 
         if(!isInScreen(new_coord) || isNear(new_pos.z) || isSky(new_pos.z))
-            return;
+            break;
 
         float new_z = tex2Dlod(ZTexSampler, float4(new_coord, int(mip_level), 0)).x;
-            
+        
         if(new_pos.z > new_z && new_pos.z < new_z + fZThickness * len_mult)
         {
-            if(sign(new_z - ray_orig.z) != sign(ray_dir.z))
-            {
-                hit = 2;
-                return;
-            }
-
-            hit = 1; hit_pos = new_pos;
-            
-            return;
+            hit = sign(new_z - ray_orig.z) == sign(ray_dir.z) ? 1 : 2;
+            hit_pos = new_pos;
+            break;
         }
         
         old_pos = new_pos;
     }
 }
 
+// <---- Denoising ---->
+
+float2 rotate2d(float2 vec, float angle)
+{
+    float c = cos(angle);
+    float s = sin(angle);
+    return mul(float2x2(c, -s, s, c), vec);
+}
+
+float4 poissonBlur(sampler tex, float2 uv, float radius)
+{
+    float4 color = tex2D(tex, uv);
+    [loop]
+    for(int i=0; i<8; ++i)
+    {
+        float2 poisson_pt = g_Poisson8[i].xy * radius * ReShade::PixelSize / YASSGI_RENDER_SCALE;
+        color += tex2D(tex, uv + rotate2d(poisson_pt, FRAMECOUNT / 10.0));
+    }
+    return color / 9;
+}
+
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Pixel Shaders
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-void PS_InputBufferSetup(in VSOUT vsout, out float4 normal : SV_Target0, out float4 z : SV_Target1)
+void PS_InputBufferSetup(in VSOUT vsout, out float4 z : SV_Target0, out float4 z_prev : SV_Target1)
 {
-    // float3 offs = float3(BUFFER_PIXEL_SIZE,0);
-
-    // float3 f 	     =       coords2WorldPos(vsout.texcoord.xy, vsout);
-    // float3 gradx1 	 = - f + coords2WorldPos(vsout.texcoord.xy + offs.xz, vsout);
-    // float3 gradx2 	 =   f - coords2WorldPos(vsout.texcoord.xy - offs.xz, vsout);
-    // float3 grady1 	 = - f + coords2WorldPos(vsout.texcoord.xy + offs.zy, vsout);
-    // float3 grady2 	 =   f - coords2WorldPos(vsout.texcoord.xy - offs.zy, vsout);
-
-    // gradx1 = lerp(gradx1, gradx2, abs(gradx1.z) > abs(gradx2.z));
-    // grady1 = lerp(grady1, grady2, abs(grady1.z) > abs(grady2.z));
-
-    // normal = float4(normalize(cross(grady1, gradx1)) * 0.5 + 0.5, 1.0);
-    normal = float4(normal_from_depth(vsout.texcoord, vsout), 1.0);
+    z_prev = tex2Dfetch(ZTexSampler, vsout.texcoord * ReShade::PixelSize);
     z = depth2Z(ReShade::GetLinearizedDepth(vsout.texcoord));
 }
 
-void PS_Trace(in VSOUT vsout, out float4 color: SV_Target)
+void PS_Trace(in VSOUT vsout, out float4 color: SV_Target0)
 {
     float3 ray_orig = coords2WorldPos(vsout.texcoord, vsout);
-    float3 normal = tex2D(NormalTexSampler, vsout.texcoord).xyz;
+    float3 normal = normal_from_depth(vsout.texcoord, vsout);
 
     float max_dist = fBaseStride * (1 << (iMaxRayStep / fSpreadStep) - 1) * fSpreadStep;
+
+    color = 0;
     
     [loop]
-    for(int r = 0; r < iRayAmount; ++r)
+    for(int r = 0; r < iRayAmount; r++)
     {
         float3 rand3 = rand4dTo3d(float4(vsout.texcoord, RANDOM / PI, (r + FRAMECOUNT) / SQRT2));
 
-        float3 ray_dir = normalize(normal + uniformHemisphere(rand3.x, rand3.y)) * (1 + (rand3.z - 1) * fStrideJitter);
+        // float3 ray_dir = normalize(normal + uniformHemisphere(rand3.x, rand3.y)) * (1 + (rand3.z - 1) * fStrideJitter);
+        float3 ray_dir = uniformHemisphere(rand3.xy, normal) * (1 + (rand3.z - 1) * fStrideJitter);
 
         // tracing
         int hit = 0;
@@ -354,50 +396,94 @@ void PS_Trace(in VSOUT vsout, out float4 color: SV_Target)
 
         if(hit == 2)
             continue;
-        else if(hit == 0)
-            hit_color = fAmbientLight;
-        else
-        {
-            // normal check
-            float2 coord_end = worldPos2Coords(ray_end, vsout);
-            float3 normal_end = tex2Dlod(NormalTexSampler, float4(coord_end, 0, 0)).rgb;
-            float normal_dot = dot(normal_end, ray_dir);
-            if(!bBackfaceLighting && normal_dot > -0.02)
-                continue;
 
-            hit_color = tex2Dlod(ReShade::BackBuffer, float4(coord_end, int(mip_level), 0)).rgb * abs(normal_dot);
+        color.w += 1;
+        if(hit == 0)
+        {
+            hit_color = mul(fAmbientLight, sRGBtoXYZ);
+            continue;
         }
-        
-        // color mixing
-        hit_color = mul(hit_color, sRGBtoAP1);
-        color += hit_color * saturate(1 - distance(ray_orig, ray_end) / max_dist);
+            
+        // normal check
+        float2 coord_end = worldPos2Coords(ray_end, vsout);
+        float3 normal_end = normal_from_depth(coord_end, vsout);
+        if(!bBackfaceLighting && dot(normal_end, ray_dir) > -0.02)
+            continue;
+
+        hit_color = tex2Dlod(ReShade::BackBuffer, float4(coord_end, int(mip_level), 0)).rgb;
+        hit_color = mul(hit_color, sRGBtoXYZ);
+        hit_color *= abs(dot(normal, ray_dir));
+        color.rgb += hit_color * saturate(1 - distance(ray_orig, ray_end) / max_dist);
     }
 
-    color /= iRayAmount;
-    color.w = 1.0;
+    color.rgb /= iRayAmount;
+}
+
+void PS_PreBlur_Accumulation(in VSOUT vsout, out float4 o: SV_Target0)
+{
+    // pre blur
+    float4 gi_curr = tex2D(GITexSampler, vsout.texcoord);
+    float4 gi_accum = poissonBlur(GIAccumTexSampler, vsout.texcoord, 2);
+
+    // accum
+    o = lerp(gi_accum, gi_curr, rcp(1 + gi_accum.w * fAccumMult / min(FRAMETIME, 1.0)));
+}
+
+void PS_Blur(in VSOUT vsout, out float4 o: SV_Target0)
+{
+    o = poissonBlur(GIAccumTexSampler, vsout.texcoord, 2);
+}
+
+void PS_PostBlur(in VSOUT vsout, out float4 o: SV_Target0)
+{
+    o = poissonBlur(GIAccumTexSampler, vsout.texcoord, 2);
 }
 
 void PS_Display(in VSOUT vsout, out float4 color: SV_Target)
 {
     if(iDebugView == 0)
+    {
         color = tex2D(ReShade::BackBuffer, vsout.texcoord);
-    else if(iDebugView == 1)
-        color = mul(tex2D(GITexSampler, vsout.texcoord).rgb, AP1toSRGB);
+        color = mul(color.rgb, sRGBtoXYZ);
+        color += tex2D(GIAccumTexSampler, vsout.texcoord).rgb * fMixMult;
+        color = mul(color.rgb, XYZtoSRGB);
+    }
+    else if(iDebugView == 1)  // initial sample
+        color = mul(tex2D(GITexSampler, vsout.texcoord).rgb, XYZtoSRGB);
+    else if(iDebugView == 2)  // hit intensity
+        color = tex2D(GITexSampler, vsout.texcoord).a / iRayAmount;
+    else if(iDebugView == 3)  // accumulated gi
+        color = mul(tex2D(GIAccumTexSampler, vsout.texcoord).rgb, XYZtoSRGB);
 }
 
 technique YASSGI{
     pass {
         VertexShader = VS_YASSGI;
         PixelShader = PS_InputBufferSetup;
-        RenderTarget0 = NormalTex;
-        RenderTarget1 = ZTex;
+        RenderTarget0 = ZTex;
+        RenderTarget1 = ZPrevTex;
     }
     pass {
         VertexShader = VS_YASSGI;
         PixelShader = PS_Trace;
-        RenderTarget = GITex;
+        RenderTarget0 = GITex;
 
         ClearRenderTargets = true;
+    }
+    pass {
+        VertexShader = VS_YASSGI;
+        PixelShader = PS_PreBlur_Accumulation;
+        RenderTarget0 = GIAccumTex;
+    }
+    pass {
+        VertexShader = VS_YASSGI;
+        PixelShader = PS_Blur;
+        RenderTarget0 = GIAccumTex;
+    }
+    pass {
+        VertexShader = VS_YASSGI;
+        PixelShader = PS_PostBlur;
+        RenderTarget0 = GIAccumTex;
     }
     pass {
         VertexShader = VS_YASSGI;
