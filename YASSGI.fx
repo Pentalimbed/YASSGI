@@ -20,7 +20,23 @@
 
 #define EPS 1e-6
 
-namespace YASSGI{
+// namespace OpticalFlow
+// {
+// #define OPTFLOW_RCP_HEIGHT (1.0 / BUFFER_HEIGHT)
+// #define OPTFLOW_ASPECT_RATIO (BUFFER_WIDTH * OPTFLOW_RCP_HEIGHT)
+// #define OPTFLOW_ROUND_UP_EVEN(x) int(x) + (int(x) % 2)
+// #define OPTFLOW_RENDER_BUFFER_WIDTH int(OPTFLOW_ROUND_UP_EVEN(256.0 * OPTFLOW_ASPECT_RATIO))
+// #define OPTFLOW_RENDER_BUFFER_HEIGHT int(256.0)
+
+// #define OPTFLOW_SIZE int2(OPTFLOW_RENDER_BUFFER_WIDTH, OPTFLOW_RENDER_BUFFER_HEIGHT)
+// #define OPTFLOW_BUFFER_SIZE_1 int2(OPTFLOW_ROUND_UP_EVEN(OPTFLOW_SIZE.x >> 0), OPTFLOW_ROUND_UP_EVEN(OPTFLOW_SIZE.y >> 0))
+
+// texture Render_Optical_Flow { Width = OPTFLOW_BUFFER_SIZE_1.x; Height = OPTFLOW_BUFFER_SIZE_1.y; Format = RG16F; MipLevels = 9; };
+// sampler Sample_Optical_Flow { Texture = Render_Optical_Flow; };
+// }
+
+namespace YASSGI
+{
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Buffers
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -150,11 +166,11 @@ uniform float fBackfaceLightMult <
     ui_step = 0.01;
 > = 0.0;
 
-// <---- Denoising ---->
+// <---- Blur ---->
 
 uniform float fPreBlurRadius <
     ui_type = "slider";
-    ui_category = "Denoising";
+    ui_category = "Blur";
     ui_label = "Pre-Blur Radius";
     ui_min = 0.0; ui_max = 50.0;
     ui_step = 1.0;
@@ -165,7 +181,7 @@ static const float fLobeAngleFraction = 0.13f;
 
 uniform float4 fHitDistParams <
     ui_type = "input";
-    ui_category = "Denoising";
+    ui_category = "Blur";
     ui_label = "Hitdist Scaling Params";
     ui_tooltip = "Most don't need changes except perhaps z scale.\n"
                  "1) bias 2) z scale (ratio to 1 meter) 3) roughness scale 4) roughness power";
@@ -175,16 +191,34 @@ uniform float4 fHitDistParams <
 
 uniform float fGeometrySensitivity <
     ui_type = "slider";
-    ui_category = "Denoising";
+    ui_category = "Blur";
     ui_label = "Geometry Sensitivity";
-    ui_tooltip = "maximum allowed deviation from local tangent plane.";
+    ui_tooltip = "Maximum allowed deviation from local tangent plane.";
     ui_min = 0.001; ui_max = 0.1;
     ui_step = 0.001;
 > = 0.005f;
 
+// <---- Accumulation ---->
+
+// uniform float fOpticalFlowScale <
+//     ui_type = "slider";
+//     ui_category = "Accumulation";
+//     ui_label = "Optical Flow Scale";
+//     ui_min = 0.0; ui_max = 10.0;
+//     ui_step = 0.1;
+// > = 0.0;
+
+// uniform float fOpticalFlowClamp <
+//     ui_type = "slider";
+//     ui_category = "Accumulation";
+//     ui_label = "Optical Flow Clamp";
+//     ui_min = 0.0; ui_max = 10.0;
+//     ui_step = 0.1;
+// > = 30.0;
+
 uniform float fAccumMult <
     ui_type = "slider";
-    ui_category = "Denoising";
+    ui_category = "Accumulation";
     ui_label = "Accumulation Multiplier";
     ui_min = 0.1; ui_max = 10.0;
     ui_step = 0.1;
@@ -389,6 +423,11 @@ struct RayInfo
 void traceRay(inout RayInfo ray, VSOUT vsout)
 {
     ray.hit = false;
+
+    [branch]
+    if(isNear(ray.orig.z) || isSky(ray.orig.z))
+        return;
+
     ray.mip_level = YASSGI_MIP_LEVEL;
     ray.travel_dist = 0;
 
@@ -396,9 +435,6 @@ void traceRay(inout RayInfo ray, VSOUT vsout)
     float len_stride = length(stride);
     ray.pos = ray.orig + stride * 0.008;
     ray.uv = worldPos2Coords(ray.pos, vsout);
-
-    if(isNear(ray.orig.z) || isSky(ray.orig.z))
-        return;
 
     [loop]
     for(int step = 0; step < iMaxRayStep; step++)
@@ -587,9 +623,10 @@ void PS_Trace(in VSOUT vsout, out float4 color: SV_Target0, out float2 hit_info:
         traceRay(ray, vsout);
 
         float3 hit_color = 0.0;
+        [branch]
         if(!ray.hit)
         {
-            color.rgb += mul(fAmbientLight, sRGBtoXYZ);
+            // color.rgb += mul(fAmbientLight, sRGBtoXYZ);
             continue;
         }
 
@@ -597,7 +634,7 @@ void PS_Trace(in VSOUT vsout, out float4 color: SV_Target0, out float2 hit_info:
         
         // normal check
         float3 normal_end = tex2Dlod(GBufferSampler, float4(ray.uv, 0, 0)).xyz;
-        bool is_backface = (sign(ray.pos.z - ray.orig.z) != sign(ray.dir.z)) || (dot(normal_end, ray.dir) > -0.02);  // the first one should be mitigated w/ more precise hit detection
+        bool is_backface = dot(normal_end, ray.dir) > -0.02;
 
         hit_color = tex2Dlod(ReShade::BackBuffer, float4(ray.uv, int(ray.mip_level), 0)).rgb;
         hit_color = mul(hit_color, sRGBtoXYZ);
@@ -607,21 +644,31 @@ void PS_Trace(in VSOUT vsout, out float4 color: SV_Target0, out float2 hit_info:
 
         color.rgb += hit_color;
 
-        hit_info.x += ray.travel_dist / iRayAmount;
+        hit_info.x += ray.travel_dist;
     }
 
-    color.rgb /= iRayAmount;
+    if(hit_info.y > EPS)
+    {
+        hit_info.x /= hit_info.y;
+        color.rgb /= hit_info.y;
+    }
+    color.rgb += mul(fAmbientLight, sRGBtoXYZ) * (1 - hit_info.y / iRayAmount);  // Ambient
     color.w = 1.0;
 }
 
 void PS_PreBlur(in VSOUT vsout, out float4 o: SV_Target0)
 {
-    float2 hit_info = tex2D(HitInfoSampler, vsout.texcoord);
+    float2 hit_info = tex2D(HitInfoSampler, vsout.texcoord).xy;
     o = spatialBlur(GISampler, hit_info.x, hit_info.y, vsout);
 }
 
 void PS_Accumulation(in VSOUT vsout, out float4 o: SV_Target0)
 {
+    // float2 optical_flow = tex2Dlod(OpticalFlow::Sample_Optical_Flow, float4(vsout.texcoord, 0, 0)).xy;
+    // float2 offset = length(optical_flow) > fOpticalFlowClamp ? 0.0: optical_flow * ReShade::PixelSize * fOpticalFlowScale;
+    // offset *= 
+    // float2 reproj_coords = vsout.texcoord - offset;
+
     float4 gi_accum = tex2D(GIAccumSampler, vsout.texcoord);
     float4 gi_curr = tex2D(GIPreBlurSampler, vsout.texcoord);
     o = lerp(gi_accum, gi_curr, rcp(1 + gi_accum.w * fAccumMult / min(FRAMETIME, 1.0)));
