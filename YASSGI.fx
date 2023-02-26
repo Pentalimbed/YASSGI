@@ -24,11 +24,17 @@ namespace YASSGI{
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Buffers
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-texture ZTex     { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = R16F; MipLevels = YASSGI_MIP_LEVEL; };
-sampler ZSampler { Texture = ZTex; };
 
-texture ZPrevTex     { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = R16F; MipLevels = YASSGI_MIP_LEVEL; };
-sampler ZPrevSampler { Texture = ZPrevTex; };
+// normal + depth
+texture GBufferTex     { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = YASSGI_MIP_LEVEL; };
+sampler GBufferSampler { Texture = GBufferTex; };
+texture GBufferPrevTex     { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = YASSGI_MIP_LEVEL; };
+sampler GBufferPrevSampler { Texture = GBufferPrevTex; };
+
+// texture ZTex     { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = R16F; MipLevels = YASSGI_MIP_LEVEL; };
+// sampler ZSampler { Texture = ZTex; };
+// texture ZPrevTex     { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = R16F; MipLevels = YASSGI_MIP_LEVEL; };
+// sampler ZPrevSampler { Texture = ZPrevTex; };
 
 // Alpha channel = hit number ~= AO
 texture GITex     { Width = YASSGI_BUFFER_WIDTH; Height = YASSGI_BUFFER_HEIGHT; Format = RGBA16F; };
@@ -272,20 +278,24 @@ float3x3 getBasis( float3 normal )
 }
 
 // <---- Depth and Normal ---->
-float z2Depth(in float z){ return (z - 1.0) * rcp(RESHADE_DEPTH_LINEARIZATION_FAR_PLANE); }
-float depth2Z(in float depth){ return depth * RESHADE_DEPTH_LINEARIZATION_FAR_PLANE + 1.0; }
+float z2Depth(float z){ return (z - 1.0) * rcp(RESHADE_DEPTH_LINEARIZATION_FAR_PLANE); }
+float depth2Z(float depth){ return depth * RESHADE_DEPTH_LINEARIZATION_FAR_PLANE + 1.0; }
 
-float3 coords2WorldPos(in float2 coord, in VSOUT vsout)
+float3 coords2WorldPos(float2 coord, VSOUT vsout)
 {
     return (coord.xyx * vsout.uvtoviewMUL + vsout.uvtoviewADD) * depth2Z(ReShade::GetLinearizedDepth(coord.xy));
 }
-float2 worldPos2Coords(in float3 world_pos, in VSOUT vsout)
+float3 coords2WorldPosMIP(float2 coord, VSOUT vsout, uint mip_level)
+{
+    return (coord.xyx * vsout.uvtoviewMUL + vsout.uvtoviewADD) * tex2Dlod(GBufferSampler, float4(coord.xy, mip_level, 0)).w;
+}
+float2 worldPos2Coords(float3 world_pos, VSOUT vsout)
 {
     const float4 projtouv = float4(rcp(vsout.uvtoviewMUL.xy), -rcp(vsout.uvtoviewMUL.xy) * vsout.uvtoviewADD.xy);
     return (world_pos.xy / world_pos.z) * projtouv.xy + projtouv.zw;
 }
 
-float3 getScreenNormal(in float2 uv, in VSOUT vsout)
+float3 getScreenNormal(float2 uv, VSOUT vsout)
 {
     float3 center_position = coords2WorldPos(uv, vsout);
 
@@ -312,15 +322,15 @@ float3 getScreenNormal(in float2 uv, in VSOUT vsout)
     return normal;
 }   
 
-bool isInScreen(in float2 coord)
+bool isInScreen(float2 coord)
 {
     return coord.x > 0.0 && coord.x < 1.0 && coord.y > 0.0 && coord.y < 1.0;
 }
-bool isNear(in float world_z)
+bool isNear(float world_z)
 {
     return world_z < depth2Z(fDepthRange.x);
 }
-bool isSky(in float world_z)
+bool isSky(float world_z)
 {
     return world_z > depth2Z(fDepthRange.y);
 }
@@ -400,7 +410,7 @@ void traceRay(inout RayInfo ray, VSOUT vsout)
         if(!isInScreen(new_coord) || isNear(new_pos.z) || isSky(new_pos.z))
             break;
 
-        float new_z = tex2Dlod(ZSampler, float4(new_coord, int(ray.mip_level), 0)).x;
+        float new_z = tex2Dlod(GBufferSampler, float4(new_coord, int(ray.mip_level), 0)).w;
         
         if(new_pos.z > new_z && new_pos.z < new_z + fZThickness * len_mult)
         {
@@ -485,7 +495,7 @@ float4 spatialBlur(sampler gi_sampler, sampler gi_hitdist_sampler, VSOUT vsout)
 
     // pre blur
     float3 world_pos = coords2WorldPos(vsout.texcoord, vsout);
-    float3 normal = getScreenNormal(vsout.texcoord, vsout);
+    float3 normal = tex2D(GBufferSampler, vsout.texcoord).xyz;
     float frustum_size = getFrustumSize(world_pos.z);
     float nonlinear_accum_speed = fPreBlurNonlinearAccumSpeed;
 
@@ -525,7 +535,7 @@ float4 spatialBlur(sampler gi_sampler, sampler gi_hitdist_sampler, VSOUT vsout)
         float2 sample_uv = worldPos2Coords(sample_pos, vsout);
 
         float4 sample_gi = tex2D(gi_sampler, sample_uv);
-        float3 sample_normal = getScreenNormal(sample_uv, vsout);
+        float3 sample_normal = tex2D(GBufferSampler, sample_uv).xyz;
 
         // weighting
         // no need for material comparison i guess
@@ -550,16 +560,17 @@ float4 spatialBlur(sampler gi_sampler, sampler gi_hitdist_sampler, VSOUT vsout)
 // Pixel Shaders
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-void PS_InputBufferSetup(in VSOUT vsout, out float4 z : SV_Target0, out float4 z_prev : SV_Target1)
+void PS_InputBufferSetup(in VSOUT vsout, out float4 g : SV_Target0, out float4 g_prev : SV_Target1)
 {
-    z_prev = tex2Dfetch(ZSampler, vsout.texcoord * ReShade::PixelSize);
-    z = depth2Z(ReShade::GetLinearizedDepth(vsout.texcoord));
+    g_prev = tex2Dfetch(GBufferSampler, vsout.texcoord * ReShade::PixelSize);
+    g.xyz = getScreenNormal(vsout.texcoord, vsout);
+    g.w = depth2Z(ReShade::GetLinearizedDepth(vsout.texcoord));
 }
 
 void PS_Trace(in VSOUT vsout, out float4 color: SV_Target0, out float hit_dist: SV_Target1)
 {
     float3 world_pos = coords2WorldPos(vsout.texcoord, vsout);
-    float3 normal = getScreenNormal(vsout.texcoord, vsout);
+    float3 normal = tex2D(GBufferSampler, vsout.texcoord).xyz;
 
     float max_dist = fBaseStride * (1 << (iMaxRayStep / fSpreadStep) - 1) * fSpreadStep;
 
@@ -588,7 +599,7 @@ void PS_Trace(in VSOUT vsout, out float4 color: SV_Target0, out float hit_dist: 
         color.w += 1;
         
         // normal check
-        float3 normal_end = getScreenNormal(ray.uv, vsout);
+        float3 normal_end = tex2Dlod(GBufferSampler, float4(ray.uv, 0, 0)).xyz;
         bool is_backface = (sign(ray.pos.z - ray.orig.z) != sign(ray.dir.z)) || (dot(normal_end, ray.dir) > -0.02);  // the first one should be mitigated w/ more precise hit detection
         if(!bBackfaceLighting && is_backface)
             continue;
@@ -649,8 +660,8 @@ technique YASSGI{
     pass {
         VertexShader = VS_YASSGI;
         PixelShader = PS_InputBufferSetup;
-        RenderTarget0 = ZTex;
-        RenderTarget1 = ZPrevTex;
+        RenderTarget0 = GBufferTex;
+        RenderTarget1 = GBufferPrevTex;
     }
     pass {
         VertexShader = VS_YASSGI;
