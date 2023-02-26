@@ -140,10 +140,15 @@ uniform float fZThickness <
     ui_step = 0.1;
 > = 0.4;
 
-uniform bool bBackfaceLighting <
-    ui_label = "Backface Lighting";
-    ui_category = "Tracing";
-> = false;
+// <---- Shading ---->
+
+uniform float fBackfaceLightMult <
+    ui_type = "slider";
+    ui_category = "Shading";
+    ui_label = "Backface Light Multiplier";
+    ui_min = 0.0; ui_max = 1.0;
+    ui_step = 0.01;
+> = 0.0;
 
 // <---- Denoising ---->
 
@@ -286,8 +291,9 @@ float3 coords2WorldPosMIP(float2 coord, VSOUT vsout, uint mip_level)
 }
 float2 worldPos2Coords(float3 world_pos, VSOUT vsout)
 {
-    const float4 projtouv = float4(rcp(vsout.uvtoviewMUL.xy), -rcp(vsout.uvtoviewMUL.xy) * vsout.uvtoviewADD.xy);
-    return (world_pos.xy / world_pos.z) * projtouv.xy + projtouv.zw;
+    // const float4 projtouv = float4(rcp(vsout.uvtoviewMUL.xy), -rcp(vsout.uvtoviewMUL.xy) * vsout.uvtoviewADD.xy);
+    // return (world_pos.xy / world_pos.z) * projtouv.xy + projtouv.zw;
+    return ((world_pos.xy / world_pos.z) - vsout.uvtoviewADD.xy) / vsout.uvtoviewMUL.xy;
 }
 
 float3 getScreenNormal(float2 uv, VSOUT vsout)
@@ -592,12 +598,13 @@ void PS_Trace(in VSOUT vsout, out float4 color: SV_Target0, out float2 hit_info:
         // normal check
         float3 normal_end = tex2Dlod(GBufferSampler, float4(ray.uv, 0, 0)).xyz;
         bool is_backface = (sign(ray.pos.z - ray.orig.z) != sign(ray.dir.z)) || (dot(normal_end, ray.dir) > -0.02);  // the first one should be mitigated w/ more precise hit detection
-        if(!bBackfaceLighting && is_backface)
-            continue;
 
         hit_color = tex2Dlod(ReShade::BackBuffer, float4(ray.uv, int(ray.mip_level), 0)).rgb;
         hit_color = mul(hit_color, sRGBtoXYZ);
+        hit_color *= is_backface ? fBackfaceLightMult: 1.0;
         hit_color *= abs(dot(normal, ray.dir));
+        // TODO actually look into lambert
+
         color.rgb += hit_color;
 
         hit_info.x += ray.travel_dist / iRayAmount;
@@ -642,7 +649,7 @@ void PS_Display(in VSOUT vsout, out float4 color: SV_Target)
     else if(iDebugView == 1)  // initial sample
         color = mul(tex2D(GISampler, vsout.texcoord).rgb, XYZtoSRGB);
     else if(iDebugView == 2)  // hit intensity
-        color = tex2D(GISampler, vsout.texcoord).a / iRayAmount;
+        color = tex2D(HitInfoSampler, vsout.texcoord).r / iRayAmount;
     else if(iDebugView == 3)  // pre-blur gi
         color = mul(tex2D(GIPreBlurSampler, vsout.texcoord).rgb, XYZtoSRGB);
     else if(iDebugView == 4)  // accumulated gi
