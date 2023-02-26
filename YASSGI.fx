@@ -31,17 +31,12 @@ sampler GBufferSampler { Texture = GBufferTex; };
 texture GBufferPrevTex     { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = YASSGI_MIP_LEVEL; };
 sampler GBufferPrevSampler { Texture = GBufferPrevTex; };
 
-// texture ZTex     { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = R16F; MipLevels = YASSGI_MIP_LEVEL; };
-// sampler ZSampler { Texture = ZTex; };
-// texture ZPrevTex     { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = R16F; MipLevels = YASSGI_MIP_LEVEL; };
-// sampler ZPrevSampler { Texture = ZPrevTex; };
+// R = HitDistance; G = HitNumber
+texture HitInfoTex     { Width = YASSGI_BUFFER_WIDTH; Height = YASSGI_BUFFER_HEIGHT; Format = RG16F; };
+sampler HitInfoSampler { Texture = HitInfoTex; };
 
-// Alpha channel = hit number ~= AO
 texture GITex     { Width = YASSGI_BUFFER_WIDTH; Height = YASSGI_BUFFER_HEIGHT; Format = RGBA16F; };
 sampler GISampler { Texture = GITex; };
-
-texture GIHitDistTex     { Width = YASSGI_BUFFER_WIDTH; Height = YASSGI_BUFFER_HEIGHT; Format = R16F; };
-sampler GIHitDistSampler { Texture = GIHitDistTex; };
 
 texture GIPreBlurTex     { Width = YASSGI_BUFFER_WIDTH; Height = YASSGI_BUFFER_HEIGHT; Format = RGBA16F; };
 sampler GIPreBlurSampler { Texture = GIPreBlurTex; };
@@ -317,7 +312,7 @@ float3 getScreenNormal(float2 uv, VSOUT vsout)
     delta_y = abs(delta_bottom.z) > abs(delta_top.z) ? delta_top : delta_bottom;
 
     float3 normal = cross(delta_y, delta_x);
-    normal *= rsqrt(dot(normal, normal)); //no epsilon, will cause issues for some reason
+    normal = normalize(normal);
 
     return normal;
 }   
@@ -383,7 +378,8 @@ struct RayInfo
 };
 
 // Simple tracer
-// you can control stride by providing a non-unit ray_dir
+// control stride by providing a non-unit ray_dir
+// TODO fix the leaking problem with big Z Thickness
 void traceRay(inout RayInfo ray, VSOUT vsout)
 {
     ray.hit = false;
@@ -489,7 +485,7 @@ float getCombinedWeight(
     return w.x * w.y * w.z;
 }
 
-float4 spatialBlur(sampler gi_sampler, sampler gi_hitdist_sampler, VSOUT vsout)
+float4 spatialBlur(sampler gi_sampler, float hit_dist, int hit_num, VSOUT vsout)
 {
     float4 gi = tex2D(gi_sampler, vsout.texcoord);
 
@@ -500,9 +496,7 @@ float4 spatialBlur(sampler gi_sampler, sampler gi_hitdist_sampler, VSOUT vsout)
     float nonlinear_accum_speed = fPreBlurNonlinearAccumSpeed;
 
     // determine radius
-    float hit_dist = tex2D(gi_hitdist_sampler, vsout.texcoord).x;
     float hit_dist_factor = getHitDistRadiusFactor(hit_dist * getHitDistScale(world_pos.z, 1.0), frustum_size);
-
     float blur_radius = fPreBlurRadius * hit_dist_factor;
 
     // weight params
@@ -517,7 +511,7 @@ float4 spatialBlur(sampler gi_sampler, sampler gi_hitdist_sampler, VSOUT vsout)
     kernel_basis[0] *= world_radius;
     kernel_basis[1] *= world_radius;
 
-    float weightsum = gi.w > EPS;
+    float weightsum = hit_num > 0;
     float4 blurred_color = weightsum * gi;
     [unroll]
     for(uint n = 0; n < 8; ++n)
@@ -562,17 +556,15 @@ float4 spatialBlur(sampler gi_sampler, sampler gi_hitdist_sampler, VSOUT vsout)
 
 void PS_InputBufferSetup(in VSOUT vsout, out float4 g : SV_Target0, out float4 g_prev : SV_Target1)
 {
-    g_prev = tex2Dfetch(GBufferSampler, vsout.texcoord * ReShade::PixelSize);
+    g_prev = tex2D(GBufferSampler, vsout.texcoord);
     g.xyz = getScreenNormal(vsout.texcoord, vsout);
     g.w = depth2Z(ReShade::GetLinearizedDepth(vsout.texcoord));
 }
 
-void PS_Trace(in VSOUT vsout, out float4 color: SV_Target0, out float hit_dist: SV_Target1)
+void PS_Trace(in VSOUT vsout, out float4 color: SV_Target0, out float2 hit_info: SV_Target1)
 {
     float3 world_pos = coords2WorldPos(vsout.texcoord, vsout);
     float3 normal = tex2D(GBufferSampler, vsout.texcoord).xyz;
-
-    float max_dist = fBaseStride * (1 << (iMaxRayStep / fSpreadStep) - 1) * fSpreadStep;
 
     color = 0;
     
@@ -582,9 +574,8 @@ void PS_Trace(in VSOUT vsout, out float4 color: SV_Target0, out float hit_dist: 
         RayInfo ray;
 
         ray.orig = world_pos;
-        float3 rand3 = rand4dTo3d(float4(vsout.texcoord, frac(FRAMECOUNT / PI), r / SQRT2));
-        // ray.dir = normalize(normal + uniformHemisphere(rand3.x, rand3.y)) * (1 + (rand3.z - 1) * fStrideJitter);
-        ray.dir = uniformLambert(rand3.xy, normal) * (1 + (rand3.z - 1) * fStrideJitter);
+        float3 rand3 = rand4dTo3d(float4(vsout.texcoord, frac(FRAMECOUNT / PI), r / SQRT2));  // TODO find a better one!
+        ray.dir = uniformLambert(rand3.xy, normal) * (1 + (rand3.z - 1) * fStrideJitter);  // TODO actually look into lambert
         ray.spread_fact = fSpreadStep;
 
         traceRay(ray, vsout);
@@ -596,7 +587,7 @@ void PS_Trace(in VSOUT vsout, out float4 color: SV_Target0, out float hit_dist: 
             continue;
         }
 
-        color.w += 1;
+        hit_info.y += 1;
         
         // normal check
         float3 normal_end = tex2Dlod(GBufferSampler, float4(ray.uv, 0, 0)).xyz;
@@ -607,17 +598,19 @@ void PS_Trace(in VSOUT vsout, out float4 color: SV_Target0, out float hit_dist: 
         hit_color = tex2Dlod(ReShade::BackBuffer, float4(ray.uv, int(ray.mip_level), 0)).rgb;
         hit_color = mul(hit_color, sRGBtoXYZ);
         hit_color *= abs(dot(normal, ray.dir));
-        color.rgb += hit_color * saturate(1 - ray.travel_dist / max_dist);
+        color.rgb += hit_color;
 
-        hit_dist += ray.travel_dist / iRayAmount;
+        hit_info.x += ray.travel_dist / iRayAmount;
     }
 
     color.rgb /= iRayAmount;
+    color.w = 1.0;
 }
 
 void PS_PreBlur(in VSOUT vsout, out float4 o: SV_Target0)
 {
-    o = spatialBlur(GISampler, GIHitDistSampler, vsout);
+    float2 hit_info = tex2D(HitInfoSampler, vsout.texcoord);
+    o = spatialBlur(GISampler, hit_info.x, hit_info.y, vsout);
 }
 
 void PS_Accumulation(in VSOUT vsout, out float4 o: SV_Target0)
@@ -667,7 +660,7 @@ technique YASSGI{
         VertexShader = VS_YASSGI;
         PixelShader = PS_Trace;
         RenderTarget0 = GITex;
-        RenderTarget1 = GIHitDistTex;
+        RenderTarget1 = HitInfoTex;
 
         ClearRenderTargets = true;
     }
