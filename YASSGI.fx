@@ -265,27 +265,24 @@ bool isSky(in float world_z)
 
 // <---- Random and Sampling ---->
 
-/// @source https://www.ronja-tutorials.com/post/024-white-noise/#:~:text=For%20many%20effects%20we%20want%20random%20numbers%20to,other%20tutorials%2C%20for%20example%20perlin%20and%20voronoi%20noise.
-float rand4dTo1d(float4 value, float4 dotDir)
+/// @source https://zhuanlan.zhihu.com/p/390862782
+float rand4dTo1d(float4 value, float a, float4 b)
 {
-    //make value smaller to avoid artefacts
-    float4 smallValue = sin(value);
-    //get scalar value from 3d vector
-    float random = dot(smallValue, dotDir);
-    //make value more random by making it bigger and then taking teh factional part
-    random = frac(sin(random) * 143758.5453);
+    float4 small_val = sin(value);
+    float random = dot(small_val, b);
+    random = frac(sin(random) * a);
     return random;
 }
 float3 rand4dTo3d(float4 value){
     return float3(
-        rand4dTo1d(value, float4(86.3528267, 92.075745, 67.4930429, 7.370599)),
-        rand4dTo1d(value, float4(26.669095, 86.7327491, 57.2284329, 22.1987259)),
-        rand4dTo1d(value, float4(10.2522207, 32.5525956, 25.4438045, 45.0742175))
+        rand4dTo1d(value, 14375.5964, float4(15.637,76.243,37.168,83.511)),
+        rand4dTo1d(value, 14684.6034, float4(45.366, 23.168,65.918,57.514)),
+        rand4dTo1d(value, 14985.1739, float4(62.654, 88.467,25.111,61.875))
     );
 }
 
 /// @source http://blog.selfshadow.com/publications/s2013-shading-course/karis/s2013_pbs_epic_notes_v2.pdf
-float3 uniformHemisphere(float2 rand, float3 normal)
+float3 uniformLambert(float2 rand, float3 normal)
 {
     float cos_theta = rand.x;
     float sin_theta = sqrt(1 - cos_theta * cos_theta);
@@ -366,8 +363,7 @@ float2 rotate2d(float2 vec, float angle)
 float4 poissonBlur(sampler tex, float2 uv, float radius)
 {
     float4 color = tex2D(tex, uv);
-    [loop]
-    for(int i=0; i<8; ++i)
+    for(int i = 0; i < 8; ++i)
     {
         float2 poisson_pt = g_Poisson8[i].xy * radius * ReShade::PixelSize / YASSGI_RENDER_SCALE;
         color += tex2D(tex, uv + rotate2d(poisson_pt, FRAMECOUNT / 10.0));
@@ -400,9 +396,9 @@ void PS_Trace(in VSOUT vsout, out float4 color: SV_Target0)
         RayInfo ray;
 
         ray.orig = world_pos;
-        float3 rand3 = rand4dTo3d(float4(vsout.texcoord, RANDOM / PI, (r + FRAMECOUNT) / SQRT2));
+        float3 rand3 = rand4dTo3d(float4(vsout.texcoord, RANDOM / PI, r / SQRT2));
         // ray.dir = normalize(normal + uniformHemisphere(rand3.x, rand3.y)) * (1 + (rand3.z - 1) * fStrideJitter);
-        ray.dir = uniformHemisphere(rand3.xy, normal) * (1 + (rand3.z - 1) * fStrideJitter);
+        ray.dir = uniformLambert(rand3.xy, normal) * (1 + (rand3.z - 1) * fStrideJitter);
         ray.spread_fact = fSpreadStep;
 
         traceRay(ray, vsout);
