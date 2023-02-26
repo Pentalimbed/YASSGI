@@ -44,13 +44,14 @@ namespace YASSGI
 // normal + depth
 texture GBufferTex     { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = YASSGI_MIP_LEVEL; };
 sampler GBufferSampler { Texture = GBufferTex; };
-texture GBufferPrevTex     { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = YASSGI_MIP_LEVEL; };
+texture GBufferPrevTex     { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; };
 sampler GBufferPrevSampler { Texture = GBufferPrevTex; };
 
-// R = HitDistance; G = HitNumber
-texture HitInfoTex     { Width = YASSGI_BUFFER_WIDTH; Height = YASSGI_BUFFER_HEIGHT; Format = RG16F; };
+// R = HitDistance; G = HitNumber; B = Accum HitDistance
+texture HitInfoTex     { Width = YASSGI_BUFFER_WIDTH; Height = YASSGI_BUFFER_HEIGHT; Format = RGBA16F; };
 sampler HitInfoSampler { Texture = HitInfoTex; };
 
+// w = Accum frame count / Accum speed
 texture GITex     { Width = YASSGI_BUFFER_WIDTH; Height = YASSGI_BUFFER_HEIGHT; Format = RGBA16F; };
 sampler GISampler { Texture = GITex; };
 
@@ -60,6 +61,12 @@ sampler GIPreBlurSampler { Texture = GIPreBlurTex; };
 // A = AccumSpeed
 texture GIAccumTex     { Width = YASSGI_BUFFER_WIDTH; Height = YASSGI_BUFFER_HEIGHT; Format = RGBA16F; };
 sampler GIAccumSampler { Texture = GIAccumTex; };
+
+texture GIBlurTex     { Width = YASSGI_BUFFER_WIDTH; Height = YASSGI_BUFFER_HEIGHT; Format = RGBA16F; };
+sampler GIBlurSampler { Texture = GIBlurTex; };
+
+texture GIPostBlurTex     { Width = YASSGI_BUFFER_WIDTH; Height = YASSGI_BUFFER_HEIGHT; Format = RGBA16F; };
+sampler GIPostBlurSampler { Texture = GIPostBlurTex; };
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Uniform Varibales
@@ -86,7 +93,7 @@ uniform float FRAMETIME   < source = "frametime";  >;
 uniform int iDebugView <
 	ui_type = "combo";
     ui_label = "Debug View";
-    ui_items = "None\0Initial Sample\0Hit Intensity\0Pre-Blur\0Accumulated GI\0";
+    ui_items = "None\0Initial Sample\0Hit Intensity\0Pre-Blur\0Accumulated GI\0Blur\0Post-Blur\0";
 > = 0;
 
 // <---- Depth and Normal ---->
@@ -177,6 +184,14 @@ uniform float fPreBlurRadius <
     ui_step = 1.0;
 > = 30.0;
 
+uniform float fBlurRadius <
+    ui_type = "slider";
+    ui_category = "Spatial Blur";
+    ui_label = "Blur Radius";
+    ui_min = 0.0; ui_max = 50.0;
+    ui_step = 1.0;
+> = 15.0;
+
 static const float fPreBlurNonlinearAccumSpeed = ( 1.0 / ( 1.0 + 8.0 ) );
 static const float fLobeAngleFraction = 0.13f;
 // 1) bias 2) z scale (ratio to 1 meter) 3) roughness scale 4) roughness power
@@ -208,6 +223,22 @@ uniform float fNormalSensitivity <
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
 > = 0.4;
+
+uniform float fAntiFireflyBlurRadius <
+    ui_type = "slider";
+    ui_category = "Temporal Accumulation";
+    ui_label = "Anti-firefly Blur Radius";
+    ui_min = 0.0; ui_max = 5.0;
+    ui_step = 1.0;
+> = 1.5;
+
+uniform float fAntiFireflyMaxLumaMult <
+    ui_type = "slider";
+    ui_category = "Temporal Accumulation";
+    ui_label = "Anti-firefly Max Luma Mult";
+    ui_min = 0.0; ui_max = 15.0;
+    ui_step = 0.1;
+> = 10.0;
 
 // <---- Color & Mixing ---->
 
@@ -271,7 +302,7 @@ VSOUT VS_YASSGI(in uint id : SV_VertexID)
 // Functions
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-// <---- Math ---->
+// <---- Math / Util ---->
 float2x2 getRotateMatrix(float angle)
 {
     float c = cos(angle);
@@ -294,6 +325,28 @@ float3x3 getBasis( float3 normal )
     // Note: due to the quaternion formulation, the generated frame is rotated by 180 degrees,
     // s.t. if N = (0, 0, 1), then T = (-1, 0, 0) and B = (0, -1, 0).
     return float3x3( T, B, normal );
+}
+
+float getLuma( float3 linear_col )
+{
+    return dot( linear_col, float3( 0.2990, 0.5870, 0.1140 ) );
+}
+
+float getFrustumSize(float z)
+{
+    return 2.0f * z * tan(radians(iVerticalFOV) * 0.5);
+}
+
+float getSpecularLobeHalfAngle(float roughness, float precent_volume)
+{
+    return atan( roughness * roughness * precent_volume / ( 1.0 - precent_volume ) );
+}
+float specMagicCurve(float roughness, float precent_volume)
+{
+    float angle = getSpecularLobeHalfAngle(roughness, precent_volume);
+    float almostHalfPi = getSpecularLobeHalfAngle(1.0, precent_volume);
+
+    return saturate(angle / almostHalfPi);
 }
 
 // <---- Depth and Normal ---->
@@ -449,21 +502,6 @@ void traceRay(inout RayInfo ray, VSOUT vsout)
 // <---- Denoising ---->
 
 // reblur
-float getFrustumSize(float z)
-{
-    return 2.0f * z * tan(radians(iVerticalFOV) * 0.5);
-}
-float getSpecularLobeHalfAngle(float roughness, float precent_volume)
-{
-    return atan( roughness * roughness * precent_volume / ( 1.0 - precent_volume ) );
-}
-float specMagicCurve(float roughness, float precent_volume)
-{
-    float angle = getSpecularLobeHalfAngle(roughness, precent_volume);
-    float almostHalfPi = getSpecularLobeHalfAngle(1.0, precent_volume);
-
-    return saturate(angle / almostHalfPi);
-}
 
 float getHitDistScale(float z, float roughness)
 {
@@ -512,7 +550,24 @@ float getCombinedWeight(
     return w.x * w.y * w.z;
 }
 
-float4 spatialBlur(sampler gi_sampler, float hit_dist, int hit_num, VSOUT vsout)
+float getFadeBasedOnAccumulatedFrames( float accum_speed )
+{
+    float history_fix_frame_num = 3;
+    float a = history_fix_frame_num * 2.0 / 3.0 + 1e-6;
+    float b = history_fix_frame_num * 4.0 / 3.0 + 2e-6;
+
+    return saturate((accum_speed - a) / (b - a));
+}
+
+struct BlurParams
+{
+    float base_radius;
+    float radius_scale;
+    float radius_bias;
+    float fraction_scale;
+};
+
+float4 spatialBlur(sampler gi_sampler, float hit_dist, int hit_num, float accum_speed, VSOUT vsout, BlurParams params)
 {
     float4 gi = tex2D(gi_sampler, vsout.texcoord);
 
@@ -524,11 +579,17 @@ float4 spatialBlur(sampler gi_sampler, float hit_dist, int hit_num, VSOUT vsout)
 
     // determine radius
     float hit_dist_factor = getHitDistRadiusFactor(hit_dist * getHitDistScale(world_pos.z, 1.0), frustum_size);
-    float blur_radius = fPreBlurRadius * hit_dist_factor;
+    // if(accum_fade)
+    //     hit_dist_factor = lerp(hit_dist_factor, 1.0, )  // adjust w/ diffError
+
+    float blur_radius = params.base_radius * hit_dist_factor;
+    blur_radius += params.radius_bias;
+    blur_radius *= params.radius_scale;
+    blur_radius *= params.base_radius != 0;
 
     // weight params
     float2 geom_params = getGeometryWeightParams(frustum_size, world_pos, normal, nonlinear_accum_speed);
-    float normal_params = getNormalWeightParams(nonlinear_accum_speed, fLobeAngleFraction, 1.0);
+    float normal_params = getNormalWeightParams(nonlinear_accum_speed, fLobeAngleFraction * params.fraction_scale, 1.0);
     float2 hit_dist_params = getHitDistanceWeightParams(hit_dist, nonlinear_accum_speed, 1.0);
     float min_hit_dist_weight = 0.1 * fLobeAngleFraction;
 
@@ -583,14 +644,12 @@ float4 spatialBlur(sampler gi_sampler, float hit_dist, int hit_num, VSOUT vsout)
 
 void PS_InputBufferSetup(in VSOUT vsout, out float4 g : SV_Target0, out float4 g_prev : SV_Target1)
 {
-    [loop]
-    for(int i=0;i<1;++i)
-        g_prev = tex2D(GBufferSampler, vsout.texcoord);
+    g_prev = tex2D(GBufferSampler, vsout.texcoord);
     g.xyz = getScreenNormal(vsout.texcoord, vsout);
     g.w = depth2Z(ReShade::GetLinearizedDepth(vsout.texcoord));
 }
 
-void PS_Trace(in VSOUT vsout, out float4 color: SV_Target0, out float2 hit_info: SV_Target1)
+void PS_Trace(in VSOUT vsout, out float4 color : SV_Target0, out float2 hit_info : SV_Target1)
 {
     float3 world_pos = coords2WorldPos(vsout.texcoord, vsout);
     float3 normal = tex2D(GBufferSampler, vsout.texcoord).xyz;
@@ -644,13 +703,20 @@ void PS_Trace(in VSOUT vsout, out float4 color: SV_Target0, out float2 hit_info:
     color.w = 1.0;
 }
 
-void PS_PreBlur(in VSOUT vsout, out float4 o: SV_Target0)
+void PS_PreBlur(in VSOUT vsout, out float4 o : SV_Target0)
 {
     float2 hit_info = tex2D(HitInfoSampler, vsout.texcoord).xy;
-    o = spatialBlur(GISampler, hit_info.x, hit_info.y, vsout);
+
+    BlurParams params;
+    params.base_radius = fPreBlurRadius;
+    params.radius_bias = 0.0;
+    params.radius_scale = 1.0;
+    params.fraction_scale = 2.0;
+
+    o = spatialBlur(GISampler, hit_info.x, hit_info.y, 1, vsout, params);
 }
 
-void PS_Accumulation(in VSOUT vsout, out float4 o: SV_Target0)
+void PS_Accumulation(in VSOUT vsout, out float4 o : SV_Target0, out float4 o_hit_info : SV_Target1)
 {
     // float2 optical_flow = tex2Dlod(OpticalFlow::Sample_Optical_Flow, float4(vsout.texcoord, 0, 0)).xy;
     // float2 offset = length(optical_flow) > fOpticalFlowClamp ? 0.0: optical_flow * ReShade::PixelSize * fOpticalFlowScale;
@@ -663,27 +729,71 @@ void PS_Accumulation(in VSOUT vsout, out float4 o: SV_Target0)
     float4 g_curr = tex2D(GBufferSampler, vsout.texcoord);
     float4 g_prev = tex2D(GBufferPrevSampler, vsout.texcoord);
 
+    float3 hit_info = tex2D(HitInfoSampler, vsout.texcoord).xyz;
+
+    // z & normal disocclusion
     float4 delta = abs(g_prev - g_curr) / max(FRAMETIME, 1.0);
     float normal_delta = dot(delta.xyz, delta.xyz);
     float z_delta = delta.w /= g_curr.w;
     float quality = exp(-normal_delta * fNormalSensitivity * 2000.0 - z_delta * fZSensitivity * 2000.0);
 
-    o.w = gi_accum.w * quality;
-    o.w = min(o.w + 1, 64);
-    o.rgb = lerp(gi_accum.rgb, gi_curr.rgb, rcp(o.w));
-    
-    // o.rgb = lerp(gi_accum.rgb, gi_curr.rgb, rcp(1 + gi_accum.w * fAccumMult / min(FRAMETIME, 1.0)));
+    float w_new = min(gi_accum.w * quality + 1, 64) ;
+    float3 gi_new = lerp(gi_accum.rgb, gi_curr.rgb, rcp(w_new));
+    float hit_dist_new = lerp(hit_info.z, hit_info.x, rcp(w_new));
+
+    // firefly suppression (on new pixels)
+    float anti_firefly_factor = w_new * fAntiFireflyBlurRadius;
+    anti_firefly_factor /= 1 + anti_firefly_factor;
+
+    float hit_dist_clamped = min(hit_dist_new, hit_info.x * 1.1);
+    hit_dist_clamped = lerp(hit_dist_new, hit_dist_clamped, anti_firefly_factor);
+
+    float luma = getLuma(gi_new.rgb);
+    float luma_clamped = min(luma, getLuma(gi_accum.rgb) * fAntiFireflyMaxLumaMult);
+    luma_clamped = lerp(luma, luma_clamped, anti_firefly_factor);
+
+    gi_new.rgb *= (luma_clamped + EPS) / (getLuma(gi_new) + EPS);
+
+    // finalize
+    o = float4(gi_new, w_new);
+    o_hit_info = float3(hit_info.xy, hit_dist_clamped);
 }
 
-// void PS_Blur(in VSOUT vsout, out float4 o: SV_Target0)
-// {
-//     o = poissonBlur(GIAccumSampler, vsout.texcoord, 2);
-// }
+void PS_Blur(in VSOUT vsout, out float4 o: SV_Target0)
+{
+    float2 hit_info = tex2D(HitInfoSampler, vsout.texcoord).xy;
+    float accum_speed = tex2D(GIAccumSampler, vsout.texcoord).z;
+    float3 normal = tex2D(GBufferSampler, vsout.texcoord).xyz;
 
-// void PS_PostBlur(in VSOUT vsout, out float4 o: SV_Target0)
-// {
-//     o = poissonBlur(GIAccumSampler, vsout.texcoord, 2);
-// }
+    float boost = 1.0 - getFadeBasedOnAccumulatedFrames(accum_speed);
+    boost *= 1.0 - pow(1.0 - abs(normal.z), 5);
+
+    BlurParams params;
+    params.base_radius = fBlurRadius * (1.0 + 2.0 * boost) / 3.0;
+    params.radius_bias = 1.0;
+    params.radius_scale = 1.0;
+    params.fraction_scale = 1.0;
+
+    o = spatialBlur(GIAccumSampler, hit_info.x, hit_info.y, accum_speed, vsout, params);
+}
+
+void PS_PostBlur(in VSOUT vsout, out float4 o: SV_Target0)
+{
+    float2 hit_info = tex2D(HitInfoSampler, vsout.texcoord).xy;
+    float accum_speed = tex2D(GIAccumSampler, vsout.texcoord).z;
+    float3 normal = tex2D(GBufferSampler, vsout.texcoord).xyz;
+
+    float boost = 1.0 - getFadeBasedOnAccumulatedFrames(accum_speed);
+    boost *= 1.0 - pow(1.0 - abs(normal.z), 5);
+
+    BlurParams params;
+    params.base_radius = fBlurRadius * (1.0 + 2.0 * boost) / 3.0;
+    params.radius_bias = 1.0;
+    params.radius_scale = 2.0;
+    params.fraction_scale = 0.5;
+
+    o = spatialBlur(GIBlurSampler, hit_info.x, hit_info.y, accum_speed, vsout, params);
+}
 
 void PS_Display(in VSOUT vsout, out float4 color: SV_Target)
 {
@@ -691,7 +801,7 @@ void PS_Display(in VSOUT vsout, out float4 color: SV_Target)
     {
         color = tex2D(ReShade::BackBuffer, vsout.texcoord);
         color = mul(color.rgb, sRGBtoXYZ);
-        color += tex2D(GIAccumSampler, vsout.texcoord).rgb * fMixMult;
+        color += tex2D(GIPostBlurSampler, vsout.texcoord).rgb * fMixMult;
         color = mul(color.rgb, XYZtoSRGB);
     }
     else if(iDebugView == 1)  // initial sample
@@ -702,6 +812,10 @@ void PS_Display(in VSOUT vsout, out float4 color: SV_Target)
         color = mul(tex2D(GIPreBlurSampler, vsout.texcoord).rgb, XYZtoSRGB);
     else if(iDebugView == 4)  // accumulated gi
         color = mul(tex2D(GIAccumSampler, vsout.texcoord).rgb, XYZtoSRGB);
+    else if(iDebugView == 5)  // blur gi
+        color = mul(tex2D(GIBlurSampler, vsout.texcoord).rgb, XYZtoSRGB);
+    else if(iDebugView == 6)  // post-blur gi
+        color = mul(tex2D(GIPostBlurSampler, vsout.texcoord).rgb, XYZtoSRGB);
 }
 
 technique YASSGI{
@@ -728,17 +842,18 @@ technique YASSGI{
         VertexShader = VS_YASSGI;
         PixelShader = PS_Accumulation;
         RenderTarget0 = GIAccumTex;
+        RenderTarget1 = HitInfoTex;
     }
-    // pass {
-    //     VertexShader = VS_YASSGI;
-    //     PixelShader = PS_Blur;
-    //     RenderTarget0 = GIAccumTex;
-    // }
-    // pass {
-    //     VertexShader = VS_YASSGI;
-    //     PixelShader = PS_PostBlur;
-    //     RenderTarget0 = GIAccumTex;
-    // }
+    pass {
+        VertexShader = VS_YASSGI;
+        PixelShader = PS_Blur;
+        RenderTarget0 = GIBlurTex;
+    }
+    pass {
+        VertexShader = VS_YASSGI;
+        PixelShader = PS_PostBlur;
+        RenderTarget0 = GIPostBlurTex;
+    }
     pass {
         VertexShader = VS_YASSGI;
         PixelShader = PS_Display;
