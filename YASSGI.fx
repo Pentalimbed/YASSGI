@@ -28,6 +28,7 @@ sampler ZTexSampler { Texture = ZTex; };
 texture ZPrevTex	    { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = R16F; MipLevels = YASSGI_MIP_LEVEL; };
 sampler ZPrevTexSampler { Texture = ZPrevTex; };
 
+// Alpha channel = hit number ~= AO
 texture GITex	     { Width = YASSGI_BUFFER_WIDTH; Height = YASSGI_BUFFER_HEIGHT; Format = RGBA16F; };
 sampler GITexSampler { Texture = GITex; };
 
@@ -299,42 +300,57 @@ float3 uniformHemisphere(float2 rand, float3 normal)
 
 // <---- Tracing ---->
 
+struct RayInfo
+{
+    float3 orig;
+    float3 dir;
+    float spread_fact;
+
+    float3 pos;
+    float2 uv;
+    bool hit;
+    float travel_dist;
+    float mip_level;
+};
+
 // Simple tracer
 // you can control stride by providing a non-unit ray_dir
-// hit: 0-hit nothing; 1-hit and valid; 2-hit and invalid;
-void traceRay(float3 ray_orig, float3 ray_dir, VSOUT vsout, out int hit, out float3 hit_pos, out float mip_level)
+void traceRay(inout RayInfo ray, VSOUT vsout)
 {
-    hit = 0;
-    hit_pos = 0.0;
-    mip_level = YASSGI_MIP_LEVEL;
+    ray.hit = false;
+    ray.mip_level = YASSGI_MIP_LEVEL;
+    ray.travel_dist = 0;
 
-    if(isNear(ray_orig.z) || isSky(ray_orig.z))
+    float3 stride = ray.dir * fBaseStride;
+    float len_stride = length(stride);
+    ray.pos = ray.orig + stride * 0.008;
+    ray.uv = worldPos2Coords(ray.pos, vsout);
+
+    if(isNear(ray.orig.z) || isSky(ray.orig.z))
         return;
-    
-    float3 stride = ray_dir * fBaseStride;
-    float3 old_pos = ray_orig + stride * 0.008;
 
     [loop]
     for(int step = 0; step < iMaxRayStep; step++)
     {
-        mip_level = min(float(step) / fSpreadStep, YASSGI_MIP_LEVEL);
-        float len_mult = pow(2, mip_level);
-        float3 new_pos = old_pos + stride * len_mult;
+        ray.mip_level = min(float(step) / ray.spread_fact, YASSGI_MIP_LEVEL);
+        float len_mult = pow(2, ray.mip_level);
+        float3 new_pos = ray.pos + stride * len_mult;
         float2 new_coord = worldPos2Coords(new_pos, vsout);
+        ray.travel_dist += len_stride * len_mult;
 
         if(!isInScreen(new_coord) || isNear(new_pos.z) || isSky(new_pos.z))
             break;
 
-        float new_z = tex2Dlod(ZTexSampler, float4(new_coord, int(mip_level), 0)).x;
+        float new_z = tex2Dlod(ZTexSampler, float4(new_coord, int(ray.mip_level), 0)).x;
         
         if(new_pos.z > new_z && new_pos.z < new_z + fZThickness * len_mult)
         {
-            hit = sign(new_z - ray_orig.z) == sign(ray_dir.z) ? 1 : 2;
-            hit_pos = new_pos;
+            ray.hit = true;
             break;
         }
         
-        old_pos = new_pos;
+        ray.pos = new_pos;
+        ray.uv = new_coord;
     }
 }
 
@@ -371,7 +387,7 @@ void PS_InputBufferSetup(in VSOUT vsout, out float4 z : SV_Target0, out float4 z
 
 void PS_Trace(in VSOUT vsout, out float4 color: SV_Target0)
 {
-    float3 ray_orig = coords2WorldPos(vsout.texcoord, vsout);
+    float3 world_pos = coords2WorldPos(vsout.texcoord, vsout);
     float3 normal = normal_from_depth(vsout.texcoord, vsout);
 
     float max_dist = fBaseStride * (1 << (iMaxRayStep / fSpreadStep) - 1) * fSpreadStep;
@@ -381,39 +397,35 @@ void PS_Trace(in VSOUT vsout, out float4 color: SV_Target0)
     [loop]
     for(int r = 0; r < iRayAmount; r++)
     {
+        RayInfo ray;
+
+        ray.orig = world_pos;
         float3 rand3 = rand4dTo3d(float4(vsout.texcoord, RANDOM / PI, (r + FRAMECOUNT) / SQRT2));
+        // ray.dir = normalize(normal + uniformHemisphere(rand3.x, rand3.y)) * (1 + (rand3.z - 1) * fStrideJitter);
+        ray.dir = uniformHemisphere(rand3.xy, normal) * (1 + (rand3.z - 1) * fStrideJitter);
+        ray.spread_fact = fSpreadStep;
 
-        // float3 ray_dir = normalize(normal + uniformHemisphere(rand3.x, rand3.y)) * (1 + (rand3.z - 1) * fStrideJitter);
-        float3 ray_dir = uniformHemisphere(rand3.xy, normal) * (1 + (rand3.z - 1) * fStrideJitter);
-
-        // tracing
-        int hit = 0;
-        float3 ray_end;
-        float mip_level;
-        traceRay(ray_orig, ray_dir, vsout, hit, ray_end, mip_level);
+        traceRay(ray, vsout);
 
         float3 hit_color = 0.0;
-
-        if(hit == 2)
-            continue;
-
-        color.w += 1;
-        if(hit == 0)
+        if(!ray.hit)
         {
-            hit_color = mul(fAmbientLight, sRGBtoXYZ);
+            color.rgb += mul(fAmbientLight, sRGBtoXYZ);
             continue;
         }
-            
+
+        color.w += 1;
+        
         // normal check
-        float2 coord_end = worldPos2Coords(ray_end, vsout);
-        float3 normal_end = normal_from_depth(coord_end, vsout);
-        if(!bBackfaceLighting && dot(normal_end, ray_dir) > -0.02)
+        float3 normal_end = normal_from_depth(ray.uv, vsout);
+        bool is_backface = (sign(ray.pos.z - ray.orig.z) != sign(ray.dir.z)) || (dot(normal_end, ray.dir) > -0.02);  // the first one should be mitigated w/ more precise hit detection
+        if(!bBackfaceLighting && is_backface)
             continue;
 
-        hit_color = tex2Dlod(ReShade::BackBuffer, float4(coord_end, int(mip_level), 0)).rgb;
+        hit_color = tex2Dlod(ReShade::BackBuffer, float4(ray.uv, int(ray.mip_level), 0)).rgb;
         hit_color = mul(hit_color, sRGBtoXYZ);
-        hit_color *= abs(dot(normal, ray_dir));
-        color.rgb += hit_color * saturate(1 - distance(ray_orig, ray_end) / max_dist);
+        hit_color *= abs(dot(normal, ray.dir));
+        color.rgb += hit_color * saturate(1 - distance(ray.orig, ray.pos) / max_dist);
     }
 
     color.rgb /= iRayAmount;
