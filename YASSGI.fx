@@ -57,6 +57,7 @@ sampler GISampler { Texture = GITex; };
 texture GIPreBlurTex     { Width = YASSGI_BUFFER_WIDTH; Height = YASSGI_BUFFER_HEIGHT; Format = RGBA16F; };
 sampler GIPreBlurSampler { Texture = GIPreBlurTex; };
 
+// A = AccumSpeed
 texture GIAccumTex     { Width = YASSGI_BUFFER_WIDTH; Height = YASSGI_BUFFER_HEIGHT; Format = RGBA16F; };
 sampler GIAccumSampler { Texture = GIAccumTex; };
 
@@ -166,11 +167,11 @@ uniform float fBackfaceLightMult <
     ui_step = 0.01;
 > = 0.0;
 
-// <---- Blur ---->
+// <---- Spatial Blur ---->
 
 uniform float fPreBlurRadius <
     ui_type = "slider";
-    ui_category = "Blur";
+    ui_category = "Spatial Blur";
     ui_label = "Pre-Blur Radius";
     ui_min = 0.0; ui_max = 50.0;
     ui_step = 1.0;
@@ -178,51 +179,35 @@ uniform float fPreBlurRadius <
 
 static const float fPreBlurNonlinearAccumSpeed = ( 1.0 / ( 1.0 + 8.0 ) );
 static const float fLobeAngleFraction = 0.13f;
-
-uniform float4 fHitDistParams <
-    ui_type = "input";
-    ui_category = "Blur";
-    ui_label = "Hitdist Scaling Params";
-    ui_tooltip = "Most don't need changes except perhaps z scale.\n"
-                 "1) bias 2) z scale (ratio to 1 meter) 3) roughness scale 4) roughness power";
-    ui_min = 0.1; ui_max = 10.0;
-    ui_step = 0.01;
-> = float4(3.0, 0.1, 20.0, -25.0);
+// 1) bias 2) z scale (ratio to 1 meter) 3) roughness scale 4) roughness power
+static const float4 fHitDistParams = float4(3.0, 0.1, 20.0, -25.0);
 
 uniform float fGeometrySensitivity <
     ui_type = "slider";
-    ui_category = "Blur";
+    ui_category = "Spatial Blur";
     ui_label = "Geometry Sensitivity";
     ui_tooltip = "Maximum allowed deviation from local tangent plane.";
     ui_min = 0.001; ui_max = 0.1;
     ui_step = 0.001;
 > = 0.005f;
 
-// <---- Accumulation ---->
+// <---- Temporal Accumulation ---->
 
-// uniform float fOpticalFlowScale <
-//     ui_type = "slider";
-//     ui_category = "Accumulation";
-//     ui_label = "Optical Flow Scale";
-//     ui_min = 0.0; ui_max = 10.0;
-//     ui_step = 0.1;
-// > = 0.0;
-
-// uniform float fOpticalFlowClamp <
-//     ui_type = "slider";
-//     ui_category = "Accumulation";
-//     ui_label = "Optical Flow Clamp";
-//     ui_min = 0.0; ui_max = 10.0;
-//     ui_step = 0.1;
-// > = 30.0;
-
-uniform float fAccumMult <
+uniform float fZSensitivity <
     ui_type = "slider";
-    ui_category = "Accumulation";
-    ui_label = "Accumulation Multiplier";
-    ui_min = 0.1; ui_max = 10.0;
-    ui_step = 0.1;
-> = 4.0;
+    ui_category = "Temporal Accumulation";
+    ui_label = "Z Sensitivity";
+    ui_min = 0.0; ui_max = 1.0;
+    ui_step = 0.01;
+> = 0.2;
+
+uniform float fNormalSensitivity <
+    ui_type = "slider";
+    ui_category = "Temporal Accumulation";
+    ui_label = "Normal Sensitivity";
+    ui_min = 0.0; ui_max = 1.0;
+    ui_step = 0.01;
+> = 0.4;
 
 // <---- Color & Mixing ---->
 
@@ -598,7 +583,9 @@ float4 spatialBlur(sampler gi_sampler, float hit_dist, int hit_num, VSOUT vsout)
 
 void PS_InputBufferSetup(in VSOUT vsout, out float4 g : SV_Target0, out float4 g_prev : SV_Target1)
 {
-    g_prev = tex2D(GBufferSampler, vsout.texcoord);
+    [loop]
+    for(int i=0;i<1;++i)
+        g_prev = tex2D(GBufferSampler, vsout.texcoord);
     g.xyz = getScreenNormal(vsout.texcoord, vsout);
     g.w = depth2Z(ReShade::GetLinearizedDepth(vsout.texcoord));
 }
@@ -640,6 +627,7 @@ void PS_Trace(in VSOUT vsout, out float4 color: SV_Target0, out float2 hit_info:
         hit_color = mul(hit_color, sRGBtoXYZ);
         hit_color *= is_backface ? fBackfaceLightMult: 1.0;
         hit_color *= abs(dot(normal, ray.dir));
+        hit_color /= PI;
         // TODO actually look into lambert
 
         color.rgb += hit_color;
@@ -668,10 +656,23 @@ void PS_Accumulation(in VSOUT vsout, out float4 o: SV_Target0)
     // float2 offset = length(optical_flow) > fOpticalFlowClamp ? 0.0: optical_flow * ReShade::PixelSize * fOpticalFlowScale;
     // offset *= 
     // float2 reproj_coords = vsout.texcoord - offset;
-
+    
     float4 gi_accum = tex2D(GIAccumSampler, vsout.texcoord);
     float4 gi_curr = tex2D(GIPreBlurSampler, vsout.texcoord);
-    o = lerp(gi_accum, gi_curr, rcp(1 + gi_accum.w * fAccumMult / min(FRAMETIME, 1.0)));
+
+    float4 g_curr = tex2D(GBufferSampler, vsout.texcoord);
+    float4 g_prev = tex2D(GBufferPrevSampler, vsout.texcoord);
+
+    float4 delta = abs(g_prev - g_curr) / max(FRAMETIME, 1.0);
+    float normal_delta = dot(delta.xyz, delta.xyz);
+    float z_delta = delta.w /= g_curr.w;
+    float quality = exp(-normal_delta * fNormalSensitivity * 2000.0 - z_delta * fZSensitivity * 2000.0);
+
+    o.w = gi_accum.w * quality;
+    o.w = min(o.w + 1, 64);
+    o.rgb = lerp(gi_accum.rgb, gi_curr.rgb, rcp(o.w));
+    
+    // o.rgb = lerp(gi_accum.rgb, gi_curr.rgb, rcp(1 + gi_accum.w * fAccumMult / min(FRAMETIME, 1.0)));
 }
 
 // void PS_Blur(in VSOUT vsout, out float4 o: SV_Target0)
