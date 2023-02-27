@@ -166,6 +166,14 @@ uniform float fZThickness <
 
 // <---- Shading ---->
 
+uniform float fMultiBounceMult <
+    ui_type = "slider";
+    ui_category = "Shading";
+    ui_label = "Secondary Bounce Multiplier";
+    ui_min = 0.0; ui_max = 3.0;
+    ui_step = 0.01;
+> = 0.9;
+
 uniform float fBackfaceLightMult <
     ui_type = "slider";
     ui_category = "Shading";
@@ -208,6 +216,14 @@ uniform float fGeometrySensitivity <
 
 // <---- Temporal Accumulation ---->
 
+uniform int iMaxAccumFrames <
+    ui_type = "slider";
+    ui_category = "Temporal Accumulation";
+    ui_label = "Max Accumulated Frames";
+    ui_min = 1; ui_max = 64;
+    ui_step = 1;
+> = 32;
+
 uniform float fZSensitivity <
     ui_type = "slider";
     ui_category = "Temporal Accumulation";
@@ -248,6 +264,16 @@ uniform int iInputColorSpace <
     ui_items = "sRGB\0";
 	ui_category = "Color & Mixing";
 > = 0;
+
+uniform float fLightSrcThres <
+	ui_type = "slider";
+    ui_label = "Light Source Threshold";
+    ui_tooltip = "Only pixels with greater brightness are considered light-emitting.";
+    ui_items = "sRGB\0";
+	ui_category = "Color & Mixing";
+    ui_min = 0.0; ui_max = 1.0;
+    ui_step = 0.01;
+> = 0.5;
 
 uniform float3 fAmbientLight <
     ui_type = "color";
@@ -502,7 +528,6 @@ void traceRay(inout RayInfo ray, VSOUT vsout)
 // <---- Denoising ---->
 
 // reblur
-
 float getHitDistScale(float z, float roughness)
 {
     return (fHitDistParams.x + abs(z) * fHitDistParams.y) * lerp(1.0, fHitDistParams.z, saturate(exp2(fHitDistParams.w * roughness * roughness)));
@@ -684,10 +709,14 @@ void PS_Trace(in VSOUT vsout, out float4 color : SV_Target0, out float2 hit_info
 
         hit_color = tex2Dlod(ReShade::BackBuffer, float4(ray.uv, int(ray.mip_level), 0)).rgb;
         hit_color = mul(hit_color, sRGBtoXYZ);
+        hit_color += tex2Dlod(GIPostBlurSampler, float4(ray.uv, int(ray.mip_level), 0)).rgb * fMultiBounceMult;
+        hit_color = getLuma(hit_color) > fLightSrcThres ? hit_color: 0.0;
         hit_color *= is_backface ? fBackfaceLightMult: 1.0;
+        
+        // brdf shading
+        // TODO actually look into lambert
         hit_color *= abs(dot(normal, ray.dir));
         hit_color /= PI;
-        // TODO actually look into lambert
 
         color.rgb += hit_color;
 
@@ -737,7 +766,7 @@ void PS_Accumulation(in VSOUT vsout, out float4 o : SV_Target0, out float4 o_hit
     float z_delta = delta.w /= g_curr.w;
     float quality = exp(-normal_delta * fNormalSensitivity * 2000.0 - z_delta * fZSensitivity * 2000.0);
 
-    float w_new = min(gi_accum.w * quality + 1, 64) ;
+    float w_new = min(gi_accum.w * quality + 1, iMaxAccumFrames) ;
     float3 gi_new = lerp(gi_accum.rgb, gi_curr.rgb, rcp(w_new));
     float hit_dist_new = lerp(hit_info.z, hit_info.x, rcp(w_new));
 
