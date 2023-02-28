@@ -41,6 +41,9 @@ namespace YASSGI
 // Buffers
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
+texture BlueNoiseTex < source ="dh_rt_noise.png" ; > { Width = NOISE_SIZE; Height = NOISE_SIZE; MipLevels = 1; Format = RGBA8; };
+sampler BlueNoiseSampler { Texture = BlueNoiseTex;  AddressU = REPEAT;	AddressV = REPEAT;	AddressW = REPEAT;};
+
 // normal + depth
 texture GBufferTex     { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = YASSGI_MIP_LEVEL; };
 sampler GBufferSampler { Texture = GBufferTex; };
@@ -59,7 +62,7 @@ texture GIPreBlurTex     { Width = YASSGI_BUFFER_WIDTH; Height = YASSGI_BUFFER_H
 sampler GIPreBlurSampler { Texture = GIPreBlurTex; };
 
 // A = AccumSpeed
-texture GIAccumTex     { Width = YASSGI_BUFFER_WIDTH; Height = YASSGI_BUFFER_HEIGHT; Format = RGBA16F; };
+texture GIAccumTex     { Width = YASSGI_BUFFER_WIDTH; Height = YASSGI_BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 1;};
 sampler GIAccumSampler { Texture = GIAccumTex; };
 
 texture GIBlurTex     { Width = YASSGI_BUFFER_WIDTH; Height = YASSGI_BUFFER_HEIGHT; Format = RGBA16F; };
@@ -181,6 +184,14 @@ uniform float fBackfaceLightMult <
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
 > = 0.0;
+
+uniform float fMatRoughness <
+    ui_type = "slider";
+    ui_category = "Shading";
+    ui_label = "Material Roughness";
+    ui_min = 0.0; ui_max = 1.0;
+    ui_step = 0.01;
+> = 0.9;
 
 // <---- Spatial Blur ---->
 
@@ -314,12 +325,12 @@ VSOUT VS_YASSGI(in uint id : SV_VertexID)
         vsout.scaledcoord.xy = vsout.texcoord.xy / YASSGI_RENDER_SCALE;
         vsout.position = float4(vsout.texcoord.xy * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
 
-        // MXAO.uvtoviewADD = float3(-1.0,-1.0,1.0);
-        // MXAO.uvtoviewMUL = float3(2.0,2.0,0.0);
+        vsout.uvtoviewADD = float3(-1.0,-1.0,1.0);
+        vsout.uvtoviewMUL = float3(2.0,2.0,0.0);
         //uncomment to enable perspective-correct position recontruction. Minor difference for common FoV's
-        vsout.uvtoviewADD = float3(-tan(radians(iVerticalFOV * 0.5)).xx, 1.0);
-        vsout.uvtoviewADD.y *= BUFFER_ASPECT_RATIO;
-        vsout.uvtoviewMUL = float3(-2.0 * vsout.uvtoviewADD.xy, 0.0);
+        // vsout.uvtoviewADD = float3(-tan(radians(iVerticalFOV * 0.5)).xx, 1.0);
+        // vsout.uvtoviewADD.y *= BUFFER_ASPECT_RATIO;
+        // vsout.uvtoviewMUL = float3(-2.0 * vsout.uvtoviewADD.xy, 0.0);
 
         return vsout;
 }
@@ -466,6 +477,18 @@ float3 uniformLambert(float2 rand, float3 normal)
     return normalize(tan_x * h.x + tan_y * h.y + normal * h.z);
 }
 
+float3 diffOrenNayar(float3 diff_color, float roughness, float nov, float nol, float voh)
+{
+	float a = roughness * roughness;
+	float s = a;// / ( 1.29 + 0.5 * a );
+	float s2 = s * s;
+	float vol = 2 * voh * voh - 1;		// double angle identity
+	float cosri = vol - nov * nol;
+	float c1 = 1 - 0.5 * s2 / (s2 + 0.33);
+	float c2 = 0.45 * s2 / (s2 + 0.09) * cosri * ( cosri >= 0 ? rcp( max( nol, nov ) ) : 1 );
+	return diff_color / PI * ( c1 + c2 ) * ( 1 + roughness * 0.5 );
+}
+
 // <---- Tracing ---->
 
 struct RayInfo
@@ -505,23 +528,22 @@ void traceRay(inout RayInfo ray, VSOUT vsout)
     {
         ray.mip_level = min(float(step) / ray.spread_fact, YASSGI_MIP_LEVEL);
         float len_mult = exp2(ray.mip_level);
-        float3 new_pos = ray.pos + stride * len_mult;
-        float2 new_coord = worldPos2Coords(new_pos, vsout);
+        ray.pos += stride * len_mult;
+        ray.uv = worldPos2Coords(ray.pos, vsout);
         ray.travel_dist += len_stride * len_mult;
 
-        if(!isInScreen(new_coord) || isNear(new_pos.z) || isSky(new_pos.z))
+        [branch]
+        if(!isInScreen(ray.uv) || isNear(ray.pos.z) || isSky(ray.pos.z))
             break;
 
-        float new_z = tex2Dlod(GBufferSampler, float4(new_coord, int(ray.mip_level), 0)).w;
+        float new_z = tex2Dlod(GBufferSampler, float4(ray.uv, int(ray.mip_level), 0)).w;
         
-        if(new_pos.z > new_z && new_pos.z < new_z + fZThickness * len_mult)
+        [branch]
+        if(ray.pos.z > new_z && ray.pos.z < new_z + fZThickness * len_mult)
         {
             ray.hit = true;
             break;
         }
-        
-        ray.pos = new_pos;
-        ray.uv = new_coord;
     }
 }
 
@@ -603,7 +625,7 @@ float4 spatialBlur(sampler gi_sampler, float hit_dist, int hit_num, float accum_
     float nonlinear_accum_speed = fPreBlurNonlinearAccumSpeed;
 
     // determine radius
-    float hit_dist_factor = getHitDistRadiusFactor(hit_dist * getHitDistScale(world_pos.z, 1.0), frustum_size);
+    float hit_dist_factor = getHitDistRadiusFactor(hit_dist * getHitDistScale(world_pos.z, fMatRoughness), frustum_size);
     // if(accum_fade)
     //     hit_dist_factor = lerp(hit_dist_factor, 1.0, )  // adjust w/ diffError
 
@@ -614,15 +636,15 @@ float4 spatialBlur(sampler gi_sampler, float hit_dist, int hit_num, float accum_
 
     // weight params
     float2 geom_params = getGeometryWeightParams(frustum_size, world_pos, normal, nonlinear_accum_speed);
-    float normal_params = getNormalWeightParams(nonlinear_accum_speed, fLobeAngleFraction * params.fraction_scale, 1.0);
-    float2 hit_dist_params = getHitDistanceWeightParams(hit_dist, nonlinear_accum_speed, 1.0);
+    float normal_params = getNormalWeightParams(nonlinear_accum_speed, fLobeAngleFraction * params.fraction_scale, fMatRoughness);
+    float2 hit_dist_params = getHitDistanceWeightParams(hit_dist, nonlinear_accum_speed, fMatRoughness);
     float min_hit_dist_weight = 0.1 * fLobeAngleFraction;
 
     // normal dir skew
     float3x3 kernel_basis = getBasis(normal);
     float world_radius = blur_radius * frustum_size / YASSGI_BUFFER_HEIGHT;
-    kernel_basis[0] *= world_radius;
-    kernel_basis[1] *= world_radius;
+    float3 tangent = kernel_basis[0] * world_radius;
+    float3 bitangent = kernel_basis[1] * world_radius;
 
     float weightsum = hit_num > 0;
     float4 blurred_color = weightsum * gi;
@@ -630,13 +652,9 @@ float4 spatialBlur(sampler gi_sampler, float hit_dist, int hit_num, float accum_
     for(uint n = 0; n < 8; ++n)
     {
         float3 offset = g_Poisson8[n];
-
-        float3 tangent = kernel_basis[0];
-        float3 bitangent = kernel_basis[1];
         
         // TODO handle specular skew when specular available
-
-        float2 rotated_offset = mul(getRotateMatrix(FRAMECOUNT/PI), offset.xy);
+        float2 rotated_offset = mul(getRotateMatrix(FRAMECOUNT * 2), offset.xy);
         float3 world_offset = tangent * rotated_offset.x + bitangent * rotated_offset.y;
         float3 sample_pos = world_pos + world_offset;
         float2 sample_uv = worldPos2Coords(sample_pos, vsout);
@@ -647,7 +665,7 @@ float4 spatialBlur(sampler gi_sampler, float hit_dist, int hit_num, float accum_
         // weighting
         // no need for material comparison i guess
         float w = exp(-0.66 * offset.z * offset.z);  // Base gaussian weight
-        w *= getCombinedWeight(normal, sample_pos, sample_normal, 1.0, geom_params, normal_params, 0.0);
+        w *= getCombinedWeight(normal, sample_pos, sample_normal, fMatRoughness, geom_params, normal_params, 0.0);
         w *= lerp(min_hit_dist_weight, 1.0, exp(-3.0 * abs(hit_dist * hit_dist_params.x + hit_dist_params.y)));
 
         // screen check
@@ -676,8 +694,17 @@ void PS_InputBufferSetup(in VSOUT vsout, out float4 g : SV_Target0, out float4 g
 
 void PS_Trace(in VSOUT vsout, out float4 color : SV_Target0, out float2 hit_info : SV_Target1)
 {
-    float3 world_pos = coords2WorldPos(vsout.texcoord, vsout);
-    float3 normal = tex2D(GBufferSampler, vsout.texcoord).xyz;
+    float2 jitter = tex2D(BlueNoiseSampler, (vsout.texcoord * ReShade::PixelSize / YASSGI_RENDER_SCALE + FRAMECOUNT) / NOISE_SIZE).xy;
+    float2 uv = vsout.texcoord + (jitter - 0.5) * ReShade::PixelSize;
+    float3 world_pos = coords2WorldPos(uv, vsout);
+
+    float depth = z2Depth(world_pos.z);
+    [branch]
+    if(depth > fDepthRange.y || depth < fDepthRange.x)
+        return;
+
+    float3 normal = tex2D(GBufferSampler, uv).xyz;
+    float3 view = normalize(world_pos);
 
     color = 0;
     
@@ -687,8 +714,10 @@ void PS_Trace(in VSOUT vsout, out float4 color : SV_Target0, out float2 hit_info
         RayInfo ray;
 
         ray.orig = world_pos;
-        float3 rand3 = rand4dTo3d(float4(vsout.texcoord, frac(FRAMECOUNT / PI), r / SQRT2));  // TODO find a better one!
-        ray.dir = uniformLambert(rand3.xy, normal) * (1 + (rand3.z - 1) * fStrideJitter);  // TODO actually look into lambert
+        float3 rand3 = rand4dTo3d(float4(uv, frac(FRAMECOUNT / PI), r));  // TODO find a better one!
+        // float3 ray_dir = uniformLambert(rand3.xy, normal);
+        float3 ray_dir = view - 2 * normal * dot(view, normal);
+        ray.dir = ray_dir * (1 + (rand3.z - 1) * fStrideJitter);  // TODO actually look into lambert
         ray.spread_fact = fSpreadStep;
 
         traceRay(ray, vsout);
@@ -713,9 +742,8 @@ void PS_Trace(in VSOUT vsout, out float4 color : SV_Target0, out float2 hit_info
         hit_color = getLuma(hit_color) > fLightSrcThres ? hit_color: 0.0;
         hit_color *= is_backface ? fBackfaceLightMult: 1.0;
         
-        // brdf shading
-        // TODO actually look into lambert
-        hit_color *= abs(dot(normal, ray.dir));
+        hit_color = max(0, diffOrenNayar(hit_color, fMatRoughness, dot(normal, view), max(dot(normal, ray_dir), EPS), dot(ray_dir, view)));
+        hit_color *= abs(dot(normal, ray_dir));
         hit_color /= PI;
 
         color.rgb += hit_color;
@@ -728,6 +756,7 @@ void PS_Trace(in VSOUT vsout, out float4 color : SV_Target0, out float2 hit_info
         hit_info.x /= hit_info.y;
         color.rgb /= hit_info.y;
     }
+    color.rgb = min(1.0, color.rgb);
     color.rgb += mul(fAmbientLight, sRGBtoXYZ) * (1 - hit_info.y / iRayAmount);  // Ambient
     color.w = 1.0;
 }
@@ -753,6 +782,7 @@ void PS_Accumulation(in VSOUT vsout, out float4 o : SV_Target0, out float4 o_hit
     // float2 reproj_coords = vsout.texcoord - offset;
     
     float4 gi_accum = tex2D(GIAccumSampler, vsout.texcoord);
+    float accum_speed = tex2Dlod(GIAccumSampler, float4(vsout.texcoord, 1, 0)).w;
     float4 gi_curr = tex2D(GIPreBlurSampler, vsout.texcoord);
 
     float4 g_curr = tex2D(GBufferSampler, vsout.texcoord);
@@ -766,12 +796,12 @@ void PS_Accumulation(in VSOUT vsout, out float4 o : SV_Target0, out float4 o_hit
     float z_delta = delta.w /= g_curr.w;
     float quality = exp(-normal_delta * fNormalSensitivity * 2000.0 - z_delta * fZSensitivity * 2000.0);
 
-    float w_new = min(gi_accum.w * quality + 1, iMaxAccumFrames) ;
-    float3 gi_new = lerp(gi_accum.rgb, gi_curr.rgb, rcp(w_new));
-    float hit_dist_new = lerp(hit_info.z, hit_info.x, rcp(w_new));
+    float accum_speed_new = min(accum_speed * quality + 1, iMaxAccumFrames) ;
+    float3 gi_new = lerp(gi_accum.rgb, gi_curr.rgb, rcp(accum_speed_new));
+    float hit_dist_new = lerp(hit_info.z, hit_info.x, rcp(accum_speed_new));
 
-    // firefly suppression (on new pixels)
-    float anti_firefly_factor = w_new * fAntiFireflyBlurRadius;
+    // // firefly suppression (on new pixels)
+    float anti_firefly_factor = accum_speed_new * fAntiFireflyBlurRadius;
     anti_firefly_factor /= 1 + anti_firefly_factor;
 
     float hit_dist_clamped = min(hit_dist_new, hit_info.x * 1.1);
@@ -784,9 +814,42 @@ void PS_Accumulation(in VSOUT vsout, out float4 o : SV_Target0, out float4 o_hit
     gi_new.rgb *= (luma_clamped + EPS) / (getLuma(gi_new) + EPS);
 
     // finalize
-    o = float4(gi_new, w_new);
+    o = float4(gi_new, accum_speed_new);
     o_hit_info = float3(hit_info.xy, hit_dist_clamped);
 }
+
+// void PS_HistoryFix(in VSOUT vsout, out float4 o : SV_Target0)
+// {
+//     float4 gi_accum = tex2D(GIAccumSampler, vsout.texcoord);
+    
+//     // a bit cheat
+//     float weightsum = hit_num > 0;
+//     float4 blurred_w = weightsum * gi_accum.w;
+//     [unroll]
+//     for(uint n = 0; n < 8; ++n)
+//     {
+//         float3 offset = g_Poisson8[n];
+
+//         float2 sample_uv = vsout.uv + offset.xy * ReShade::PixelSize / YASSGI_RENDER_SCALE;
+
+//         float4 sample_gi = tex2D(gi_sampler, sample_uv);
+//         float3 sample_normal = tex2D(GBufferSampler, sample_uv).xyz;
+
+//         // weighting
+//         // no need for material comparison i guess
+//         float w = exp(-0.66 * offset.z * offset.z);  // Base gaussian weight
+//         w *= getCombinedWeight(normal, sample_pos, sample_normal, 1.0, geom_params, normal_params, 0.0);
+//         w *= lerp(min_hit_dist_weight, 1.0, exp(-3.0 * abs(hit_dist * hit_dist_params.x + hit_dist_params.y)));
+
+//         // screen check
+//         w = isInScreen(sample_uv) ? w : 0.0;
+//         sample_gi = w ? sample_gi : 0.0;
+
+//         // accumulate
+//         weightsum += w;
+//         blurred_color += sample_gi * w;
+//     }
+// }
 
 void PS_Blur(in VSOUT vsout, out float4 o: SV_Target0)
 {
@@ -834,17 +897,17 @@ void PS_Display(in VSOUT vsout, out float4 color: SV_Target)
         color = mul(color.rgb, XYZtoSRGB);
     }
     else if(iDebugView == 1)  // initial sample
-        color = mul(tex2D(GISampler, vsout.texcoord).rgb, XYZtoSRGB);
+        color = mul(tex2D(GISampler, vsout.texcoord).rgb, XYZtoSRGB) * fMixMult;
     else if(iDebugView == 2)  // hit intensity
         color = tex2D(HitInfoSampler, vsout.texcoord).r / iRayAmount;
     else if(iDebugView == 3)  // pre-blur gi
-        color = mul(tex2D(GIPreBlurSampler, vsout.texcoord).rgb, XYZtoSRGB);
+        color = mul(tex2D(GIPreBlurSampler, vsout.texcoord).rgb, XYZtoSRGB) * fMixMult;
     else if(iDebugView == 4)  // accumulated gi
-        color = mul(tex2D(GIAccumSampler, vsout.texcoord).rgb, XYZtoSRGB);
+        color = mul(tex2D(GIAccumSampler, vsout.texcoord).rgb, XYZtoSRGB) * fMixMult;
     else if(iDebugView == 5)  // blur gi
-        color = mul(tex2D(GIBlurSampler, vsout.texcoord).rgb, XYZtoSRGB);
+        color = mul(tex2D(GIBlurSampler, vsout.texcoord).rgb, XYZtoSRGB) * fMixMult;
     else if(iDebugView == 6)  // post-blur gi
-        color = mul(tex2D(GIPostBlurSampler, vsout.texcoord).rgb, XYZtoSRGB);
+        color = mul(tex2D(GIPostBlurSampler, vsout.texcoord).rgb, XYZtoSRGB) * fMixMult;
 }
 
 technique YASSGI{
