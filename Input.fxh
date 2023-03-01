@@ -34,6 +34,7 @@ float2 viewSpaceToUv(float3 pos){return (pos.xy / pos.z + 1) / 2;}
 
 // src: https://gist.github.com/bgolus/a07ed65602c009d5e2f753826e8078a0
 // src fr: https://atyuwen.github.io/posts/normal-reconstruction
+// normal points outwards from the hull
 float3 getViewNormalAccurate(float2 uv)
 {
     float3 view_pos = uvToViewSpace(uv);
@@ -73,7 +74,7 @@ float3 getViewNormalAccurate(float2 uv)
     float3 h_deriv = he.x < he.y ? l : r;
     float3 v_deriv = ve.x < ve.y ? d : u;
 
-    return normalize(cross(h_deriv, v_deriv));
+    return normalize(cross(v_deriv, h_deriv));
 }
 
 // src: AstrayFX

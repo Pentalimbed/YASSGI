@@ -42,7 +42,7 @@ uniform float fFrameTime   < source = "frametime";  >;
 uniform int iViewMode <
 	ui_type = "combo";
     ui_label = "View Mode";
-    ui_items = "YASSGI\0Depth / Normal\0GI / AO (Raw)\0GI / AO (Accumulated)";
+    ui_items = "YASSGI\0Depth / Normal\0GI / AO (Raw)\0GI / AO (Accumulated)\0";
 > = 0;
 
 // <---- Input ---->
@@ -69,9 +69,9 @@ uniform float fZThickness <
     ui_type = "slider";
     ui_category = "GI";
     ui_label = "Z Thickness";
-    ui_min = 0.0; ui_max = 20.0;
+    ui_min = 0.0; ui_max = 10.0;
     ui_step = 0.1;
-> = 2.0;
+> = 4.0;
 
 #define iNumSlices 1
 
@@ -89,23 +89,23 @@ uniform uint iNumSteps <
     ui_label = "Steps per Slice";
     ui_min = 1; ui_max = 16;
     ui_step = 1;
-> = 16;
+> = 8;
 
-uniform uint fBaseStride <
+uniform float fBaseStride <
     ui_type = "slider";
     ui_category = "GI";
     ui_label = "Base Stride";
     ui_min = 1; ui_max = 10.0;
     ui_step = 0.1;
-> = 2.0;
+> = 8.0;
 
-uniform uint fStridePower <
+uniform float fStridePower <
     ui_type = "slider";
     ui_category = "GI";
     ui_label = "Exponential Stride";
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
-> = 0.7;
+> = 0.3;
 
 // <---- Temporal Accumulation ---->
 
@@ -127,7 +127,7 @@ uniform float fZSensitivity <
 
 uniform float fNormalSensitivity <
     ui_type = "slider";
-    ui_category = "Temporal Accumulation";
+    ui_category = "Accumulation";
     ui_label = "Normal Sensitivity";
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
@@ -165,18 +165,9 @@ float fmod(float a, float b)
 	return a < 0 ? -c : c;
 }
 
-// src: [Drobot2014] Low Level Optimizations for GCN
-float fastsqrt(float x)
+bool isInScreen(float2 uv)
 {
-    return asfloat(0x1FBD1DF5 + (asint(x) >> 1));
-}
-
-// src: [Eberly2014] GPGPU Programming for Games and Science
-float fastacos(float x)
-{
-    float res = -0.156583 * abs(x) + HALF_PI;
-    res *= fastsqrt(1.0 - abs(x));
-    return x >= 0 ? res : PI - res;
+    return uv.x > 0.0 && uv.x < 1.0 && uv.y > 0.0 && uv.y < 1.0;
 }
 
 // return [tangent, bi-tangent, normal]
@@ -196,13 +187,9 @@ float3x3 getBasis( float3 normal )
     return float3x3( T, B, normal );
 }
 
-float getAngle(float3 v1, float3 v2)
-{
-    return fastacos(dot(normalize(v1), normalize(v2)));
-}
 float getCoordAngle(float3 x, float3 y, float3 ivec)
 {
-    return sign(dot(y, ivec)) * getAngle(x, ivec);
+    return atan2(dot(y, ivec), dot(x, ivec));
 }
 
 /// src https://zhuanlan.zhihu.com/p/390862782
@@ -235,21 +222,25 @@ void singleSample(
 
     float2 angles = float2(getCoordAngle(tangent, normal_proj, ray_offset),
                            getCoordAngle(tangent, normal_proj, pos_back - pos_origin));
+    float angle_front = angles.x;
     [branch]
     if(angles.x < EPS)
         return;
-    angles = (min(angles.x, angles.y), max(angles.x, angles.y));
+    angles = float2(min(angles.x, angles.y), max(angles.x, angles.y));
 
-    float sector = PI / YASSGI_BITMASK_SIZE;
     float2 sector_range = float2(0, YASSGI_SECTOR_ANGLE);
+    bool front_occluded = false;
     [unroll]
     for(int i = 0; i < YASSGI_BITMASK_SIZE; ++i)
     {
-        bool occluded = (sector_range.x + sector * 0.5 <= angles.y) && (sector_range.y > angles.x + sector * 0.5);
+        bool occluded = (min(sector_range.y, angles.y) - max(sector_range.x, angles.x)) >= 0.5 * YASSGI_SECTOR_ANGLE;
+        front_occluded = front_occluded || (bitmask[i] && (angle_front > sector_range.x) && (angle_front < sector_range.y));
+        // bool occluded = (sector_range.x <= angles.y) || (sector_range.y >= angles.x + YASSGI_SECTOR_ANGLE * 0.5);
         shaded_bits += occluded && !bitmask[i];
         bitmask[i] = bitmask[i] || occluded;
         sector_range += YASSGI_SECTOR_ANGLE;
     }
+    shaded_bits *= !front_occluded;
 }
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -299,10 +290,10 @@ void PS_BitMaskGI(
     // {
         float3 dir = float3(1, 0, 0);
         sincos((jitter.x * 2 + rcp(iNumSlices)) * PI, dir.y, dir.x);
-        float2 step = dir.xy * fBaseStride * ReShade::PixelSize * (1 + (jitter.y - 0.5) * 0.5);
+        float2 step = dir.xy * fBaseStride * ReShade::PixelSize / YASSGI_RENDER_SCALE * (1 + (jitter.y - 0.5) * 0.5);
 
         float3 normal_plane = normalize(cross(pos, dir));
-        float3 normal_proj = normalize(normal - normal_plane * dot(normal, normal_plane));
+        float3 normal_proj = normal - normal_plane * dot(normal, normal_plane);
         float3 tangent = normalize(cross(normal_plane, normal_proj));
 
         bool bitmask[YASSGI_BITMASK_SIZE];
@@ -314,8 +305,14 @@ void PS_BitMaskGI(
         [loop]
         for(int i = 0; i < iNumSteps * 2; ++i)
         { 
-            uv_offset = -uv_offset + (i % 2) * step;  // alternating between + and -
+            float spread_level = exp2(i * 0.5 * fStridePower);
+
+            uv_offset = -uv_offset + ((i + 1) % 2) * step * spread_level;  // alternating between + and -
             float2 uv_curr = uv + uv_offset;
+
+            [branch]
+            if(!isInScreen(uv))
+                continue;
 
             float3 ray_offset;
             uint shaded_bits;
@@ -323,42 +320,42 @@ void PS_BitMaskGI(
                 uv_curr, pos, normal_proj, tangent,
                 bitmask, ray_offset, shaded_bits);
 
-            float3 gi_step = Input::srgbToLinear(tex2Dlod(ReShade::BackBuffer, float4(uv_curr, 0, 0)).rgb);
+            float3 gi_step = Input::srgbToLinear(tex2Dlod(ReShade::BackBuffer, float4(uv_curr, spread_level, 0)).rgb);
             gi += gi_step * shaded_bits * saturate(dot(normal, normalize(ray_offset))) * rcp(YASSGI_BITMASK_SIZE);
         }
 
         [unroll]
         for(int i = 0; i < YASSGI_BITMASK_SIZE; ++i)
-            ao += bitmask[i] ? 0 : rcp(YASSGI_BITMASK_SIZE);
+            ao += bitmask[i] ? rcp(YASSGI_BITMASK_SIZE) : 0;
     // }
     
     gi_ao = float4(gi * rcp(iNumSlices), ao * rcp(iNumSlices));
 }
 
-// void PS_Accumulation(
-//     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
-//     out float4 gi_ao_accum : SV_Target0, out float4 o_accum_speed : SV_Target1)
-// {
-//     float4 gi_accum = tex2D(samp_gi_ao_accum, uv);
-//     float accum_speed = tex2Dlod(samp_accum_speed, float4(uv, 1, 0)).x;
-//     float4 gi_curr = tex2D(samp_gi_ao, uv);
+void PS_Accumulation(
+    in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
+    out float4 gi_ao_accum : SV_Target0, out float4 o_accum_speed : SV_Target1)
+{
+    float4 gi_accum = tex2D(samp_gi_ao_accum, uv);
+    float accum_speed = tex2Dlod(samp_accum_speed, float4(uv, 1, 0)).x;
+    float4 gi_curr = tex2D(samp_gi_ao, uv);
 
-//     float4 normals = tex2D(samp_pk_normal, uv);
-//     float2 zs = tex2D(samp_z, uv).xy;
+    float4 normals = tex2D(samp_pk_normal, uv);
+    float2 zs = tex2D(samp_z, uv).xy;
 
-//     // z & normal disocclusion
-//     float4 delta = abs(float4(Input::unpackNormals(normals.zw) - Input::unpackNormals(normals.xy), zs.y - zs.x)) / max(fFrameTime, 1.0);
-//     float normal_delta = dot(delta.xyz, delta.xyz);
-//     float z_delta = delta.w / zs.x;
-//     float quality = exp(-normal_delta * fNormalSensitivity * 1e3 - z_delta * fZSensitivity * 1e3);
+    // z & normal disocclusion
+    float4 delta = abs(float4(Input::unpackNormals(normals.zw) - Input::unpackNormals(normals.xy), zs.y - zs.x)) / max(fFrameTime, 1.0);
+    float normal_delta = dot(delta.xyz, delta.xyz);
+    float z_delta = delta.w / zs.x;
+    float quality = exp(-normal_delta * fNormalSensitivity * 1e3 - z_delta * fZSensitivity * 1e3);
 
-//     float accum_speed_new = min(accum_speed * quality + 1, iMaxAccumFrames) ;
-//     float4 gi_new = lerp(gi_accum, gi_curr, rcp(accum_speed_new));
+    float accum_speed_new = min(accum_speed * quality + 1, iMaxAccumFrames) ;
+    float4 gi_new = lerp(gi_accum, gi_curr, rcp(accum_speed_new));
 
-//     // finalize
-//     gi_ao_accum = gi_new;
-//     o_accum_speed = accum_speed_new;
-// }
+    // finalize
+    gi_ao_accum = gi_new;
+    o_accum_speed = accum_speed_new;
+}
 
 void PS_Display(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
@@ -409,12 +406,12 @@ technique YASSGI{
 
         ClearRenderTargets = true;
     }
-    // pass {
-    //     VertexShader = PostProcessVS;
-    //     PixelShader = PS_Accumulation;
-    //     RenderTarget0 = tex_gi_ao_accum;
-    //     RenderTarget1 = tex_accum_speed;
-    // }
+    pass {
+        VertexShader = PostProcessVS;
+        PixelShader = PS_Accumulation;
+        RenderTarget0 = tex_gi_ao_accum;
+        RenderTarget1 = tex_accum_speed;
+    }
     pass {
         VertexShader = PostProcessVS;
         PixelShader = PS_Display;
