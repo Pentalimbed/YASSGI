@@ -97,7 +97,7 @@ uniform float fBaseStride <
     ui_label = "Base Stride";
     ui_min = 1; ui_max = 10.0;
     ui_step = 0.1;
-> = 8.0;
+> = 5.0;
 
 uniform float fStridePower <
     ui_type = "slider";
@@ -132,6 +132,32 @@ uniform float fNormalSensitivity <
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
 > = 0.4;
+
+// <---- Mixing ---->
+
+uniform float fIlStrength <
+    ui_type = "slider";
+    ui_category = "Mixing";
+    ui_label = "IL Strength";
+    ui_min = 0.0; ui_max = 5.0;
+    ui_step = 0.01;
+> = 1.0;
+
+uniform float fAoStrength <
+    ui_type = "slider";
+    ui_category = "Mixing";
+    ui_label = "AO Strength";
+    ui_min = 0.0; ui_max = 10.0;
+    ui_step = 0.01;
+> = 1.0;
+
+uniform float fBackfaceStrength <
+    ui_type = "slider";
+    ui_category = "Mixing";
+    ui_label = "Backface Lighting Strength";
+    ui_min = 0.0; ui_max = 5.0;
+    ui_step = 0.01;
+> = 0.0;
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Buffers
@@ -235,7 +261,6 @@ void singleSample(
     {
         bool occluded = (min(sector_range.y, angles.y) - max(sector_range.x, angles.x)) >= 0.5 * YASSGI_SECTOR_ANGLE;
         front_occluded = front_occluded || (bitmask[i] && (angle_front > sector_range.x) && (angle_front < sector_range.y));
-        // bool occluded = (sector_range.x <= angles.y) || (sector_range.y >= angles.x + YASSGI_SECTOR_ANGLE * 0.5);
         shaded_bits += occluded && !bitmask[i];
         bitmask[i] = bitmask[i] || occluded;
         sector_range += YASSGI_SECTOR_ANGLE;
@@ -289,7 +314,7 @@ void PS_BitMaskGI(
     // for(int slice = 0; slice < iNumSlices; ++slice)
     // {
         float3 dir = float3(1, 0, 0);
-        sincos((jitter.x * 2 + rcp(iNumSlices)) * PI, dir.y, dir.x);
+        sincos(jitter.x * 2 * PI, dir.y, dir.x);
         float2 step = dir.xy * fBaseStride * ReShade::PixelSize / YASSGI_RENDER_SCALE * (1 + (jitter.y - 0.5) * 0.5);
 
         float3 normal_plane = normalize(cross(pos, dir));
@@ -320,8 +345,13 @@ void PS_BitMaskGI(
                 uv_curr, pos, normal_proj, tangent,
                 bitmask, ray_offset, shaded_bits);
 
-            float3 gi_step = Input::srgbToLinear(tex2Dlod(ReShade::BackBuffer, float4(uv_curr, spread_level, 0)).rgb);
-            gi += gi_step * shaded_bits * saturate(dot(normal, normalize(ray_offset))) * rcp(YASSGI_BITMASK_SIZE);
+            float3 normal_step = Input::unpackNormals(tex2Dlod(samp_pk_normal, float4(uv_curr, spread_level, 0)).xy);
+            float3 ray_dir = normalize(ray_offset);
+            float3 gi_step = Input::srgbToLinear3(tex2Dlod(ReShade::BackBuffer, float4(uv_curr, spread_level, 0)).rgb);
+            gi_step *= shaded_bits * rcp(YASSGI_BITMASK_SIZE) * saturate(dot(normal, ray_dir)) ;
+            gi_step *= dot(normal_step, -ray_dir) < EPS ? fBackfaceStrength : 1.0;
+
+            gi += gi_step;
         }
 
         [unroll]
@@ -329,7 +359,7 @@ void PS_BitMaskGI(
             ao += bitmask[i] ? rcp(YASSGI_BITMASK_SIZE) : 0;
     // }
     
-    gi_ao = float4(gi * rcp(iNumSlices), ao * rcp(iNumSlices));
+    gi_ao = float4(gi, ao);
 }
 
 void PS_Accumulation(
@@ -364,13 +394,17 @@ void PS_Display(
     [branch]
     if(iViewMode == 0)
     {
-        color = tex2D(ReShade::BackBuffer, uv);
+        float4 gi_ao = tex2D(samp_gi_ao_accum, uv);
+        color.rgb = Input::srgbToLinear3(tex2D(ReShade::BackBuffer, uv).rgb);
+        color.rgb += gi_ao.rgb * fIlStrength;
+        color.rgb *= pow(1 - gi_ao.a, fAoStrength);
+        color.rgb = Input::linearToSrgb3(color.rgb);
     }
     else if(iViewMode == 1)  // Depth / Normal
     {
         if((iFrameCount / 300) % 2)  // Normal
         {
-            color = (Input::unpackNormals(tex2D(samp_pk_normal, uv).xy) + 1) * 0.5;
+            color = (Input::unpackNormals(tex2D(samp_pk_normal, uv).xy) + 1) * 1;
         }
         else  // Depth
         {
@@ -384,11 +418,11 @@ void PS_Display(
     }
     else if(iViewMode == 2)  // GI
     {
-        color = (iFrameCount / 300) % 2 ? 1 - tex2D(samp_gi_ao, uv).w : Input::linearToSrgb(tex2D(samp_gi_ao, uv).xyz);
+        color = (iFrameCount / 300) % 2 ? Input::linearToSrgb(1 - tex2D(samp_gi_ao, uv).w) : Input::linearToSrgb3(tex2D(samp_gi_ao, uv).xyz * fIlStrength);
     }
     else if(iViewMode == 3)  // GI Accum
     {
-        color = (iFrameCount / 300) % 2 ? 1 - tex2D(samp_gi_ao_accum, uv).w : Input::linearToSrgb(tex2D(samp_gi_ao_accum, uv).xyz);
+        color = (iFrameCount / 300) % 2 ? Input::linearToSrgb(1 - tex2D(samp_gi_ao_accum, uv).w) : Input::linearToSrgb3(tex2D(samp_gi_ao_accum, uv).xyz * fIlStrength);
     }
 }
 

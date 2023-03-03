@@ -715,8 +715,7 @@ void PS_Trace(in VSOUT vsout, out float4 color : SV_Target0, out float2 hit_info
 
         ray.orig = world_pos;
         float3 rand3 = rand4dTo3d(float4(uv, frac(FRAMECOUNT / PI), r));  // TODO find a better one!
-        // float3 ray_dir = uniformLambert(rand3.xy, normal);
-        float3 ray_dir = view - 2 * normal * dot(view, normal);
+        float3 ray_dir = uniformLambert(rand3.xy, normal);
         ray.dir = ray_dir * (1 + (rand3.z - 1) * fStrideJitter);  // TODO actually look into lambert
         ray.spread_fact = fSpreadStep;
 

@@ -7,7 +7,7 @@ float linearToSrgb(float x)
 {
     return x < 0.0031308 ? 12.92 * x : 1.055 * pow(x, rcp(2.4)) - 0.055;
 }
-float3 linearToSrgb(float3 c)
+float3 linearToSrgb3(float3 c)
 {
     return float3(linearToSrgb(c.x), linearToSrgb(c.y), linearToSrgb(c.z));
 }
@@ -15,7 +15,7 @@ float srgbToLinear(float x)
 {
     return x < 0.04045 ? x / 12.92 : pow((x + 0.055) / 1.055, 2.4);
 }
-float3 srgbToLinear(float3 c)
+float3 srgbToLinear3(float3 c)
 {
     return float3(srgbToLinear(c.x), srgbToLinear(c.y), srgbToLinear(c.z));
 }
