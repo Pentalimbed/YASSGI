@@ -3,6 +3,7 @@
     depth: linearized z
     z direction: + going farther, - coming closer
     normal: pointing outwards
+    color & gi: ACEScg
 */
 
 #include "ReShade.fxh"
@@ -18,6 +19,13 @@ namespace YASSGI
 #define HALF_PI 1.57079632679
 
 #define EPS 1e-6
+
+// 0 - Simple Tracing
+// 1 - Hi-Z Tracing
+// 2 - Bitmask IL https://arxiv.org/abs/2301.11376
+#ifndef YASSGI_TECHNIQUE
+#   define YASSGI_TECHNIQUE 0
+#endif
 
 #ifndef YASSGI_RENDER_SCALE
 #   define YASSGI_RENDER_SCALE 0.5
@@ -35,6 +43,21 @@ namespace YASSGI
 #define YASSGI_BITMASK_SIZE 32
 #define YASSGI_SECTOR_ANGLE (PI / YASSGI_BITMASK_SIZE)
 
+// color space conversion matrices
+// src: https://www.colour-science.org/apps/  using CAT02
+static const float3x3 g_sRGBToACEScg = float3x3{
+    0.613117812906440,  0.341181995855625,  0.045787344282337,
+    0.069934082307513,  0.918103037508582,  0.011932775530201,
+    0.020462992637737,  0.106768663382511,  0.872715910619442
+};
+static const float3x3 g_ACEScgToSRGB = float3x3{
+    1.704887331049502, -0.624157274479025, -0.080886773895704,
+    -0.129520935348888,  1.138399326040076, -0.008779241755018,
+    -0.024127059936902, -0.124620612286390,  1.148822109913262
+};
+
+#define g_colorInputMat g_sRGBToACEScg
+#define g_colorOutputMat g_ACEScgToSRGB
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Uniform Varibales
@@ -71,13 +94,25 @@ uniform float fWeapDepthMult <
 // Buffers
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-// normal and z
-texture tex_g  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F;};
+// color
+texture tex_color  {Width = BUFFER_WIDTH; HEIGHT = BUFFER_HEIGHTL; Format = RGBA16F; MipLevels = YASSGI_MIP_LEVEL};
+sampler samp_color {Texture = tex_color};
+
+// normal & z
+texture tex_g  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = YASSGI_MIP_LEVEL};
 sampler samp_g {Texture = tex_g;};
 
-// normal and z (previous frame)
+// normal & z (previous frame)
 texture tex_g_prev  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F;};
 sampler samp_g_prev {Texture = tex_g_prev;};
+
+// gi & ao
+texture tex_gi_ao  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = RGBA16F;};
+sampler samp_gi_ao {Texture = tex_gi_ao;};
+
+// gi & ao, accumulated
+texture tex_gi_ao_accum  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = RGBA16F;};
+sampler samp_gi_ao_accum {Texture = tex_gi_ao_accum;};
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Functions
@@ -152,8 +187,12 @@ void PS_SavePrev(
 
 void PS_InputSetup(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
-    out float4 g : SV_Target0)
+    out float4 color : SV_Target0, out float4 g : SV_Target1)
 {
+    // color
+    color.rgb = tex2D(ReShade::BackBuffer, uv).rgb * g_colorInputMat;
+
+    // g
     float z = getZ(uv);
     float3 normal = getViewNormalAccurate(uv);
 
@@ -166,6 +205,14 @@ void PS_InputSetup(
     g = float4(normal, z);
 }
 
+void PS_GI(
+    in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
+    out float4 gi_ao : SV_Target0
+)
+{
+    gi_ao = 0;
+}
+
 void PS_Display(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
     out float4 color : SV_Target)
@@ -173,7 +220,7 @@ void PS_Display(
     [branch]
     if(iViewMode == 0)  // None
     {
-        color.rgb = tex2D(ReShade::BackBuffer, uv).rgb;
+        color.rgb = tex2D(samp_color, uv).rgb * g_colorOutputMat;
     }
     else if(iViewMode == 1)  // Depth / Normal
     {
@@ -211,7 +258,13 @@ technique YASSGI{
     pass {
         VertexShader = PostProcessVS;
         PixelShader = PS_InputSetup;
-        RenderTarget0 = tex_g;
+        RenderTarget0 = tex_color;
+        RenderTarget1 = tex_g;
+    }
+    pass {
+        VertexShader = PostProcessVS;
+        PixelShader = PS_GI;
+        RenderTarget0 = tex_gi_ao;
     }
     pass {
         VertexShader = PostProcessVS;
