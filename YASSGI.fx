@@ -190,13 +190,14 @@ uniform float fZThickness <
 
 // <---- Shading ---->
 
-uniform float fMatRoughness <
-    ui_type = "slider";
-    ui_category = "Shading";
-    ui_label = "Material: Roughness";
-    ui_min = 0.0; ui_max = 1.0;
-    ui_step = 0.01;
-> = 0.9;
+static const float fMatRoughness = 0.1;
+// uniform float fMatRoughness <
+//     ui_type = "slider";
+//     ui_category = "Shading";
+//     ui_label = "Material: Roughness";
+//     ui_min = 0.0; ui_max = 1.0;
+//     ui_step = 0.01;
+// > = 0.9;
 
 // <---- Spatial Blur ---->
 
@@ -253,6 +254,22 @@ uniform float fNormalSensitivity <
 
 // <---- Mixing ---->
 
+uniform float fIlStrength <
+    ui_type = "slider";
+    ui_category = "Mixing";
+    ui_label = "IL Strength";
+    ui_min = 0.0; ui_max = 2.0;
+    ui_step = 0.01;
+> = 1.0;
+
+uniform float fAoStrength <
+    ui_type = "slider";
+    ui_category = "Mixing";
+    ui_label = "AO Strength";
+    ui_min = 0.0; ui_max = 2.0;
+    ui_step = 0.01;
+> = 1.0;
+
 uniform float fLightSrcThres <
 	ui_type = "slider";
     ui_label = "Light Source Threshold";
@@ -274,25 +291,9 @@ uniform float fBounceMult <
     ui_type = "slider";
     ui_category = "Mixing";
     ui_label = "Bounce Strength";
-    ui_min = 0.0; ui_max = 50.0;
-    ui_step = 0.1;
-> = 50.0;
-
-uniform float fIlStrength <
-    ui_type = "slider";
-    ui_category = "Mixing";
-    ui_label = "IL Strength";
-    ui_min = 0.0; ui_max = 100.0;
-    ui_step = 0.1;
-> = 1.0;
-
-uniform float fAoStrength <
-    ui_type = "slider";
-    ui_category = "Mixing";
-    ui_label = "AO Strength";
-    ui_min = 0.0; ui_max = 10.0;
-    ui_step = 0.1;
-> = 1.0;
+    ui_min = 0.0; ui_max = 1.0;
+    ui_step = 0.01;
+> = 0.40;
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Buffers
@@ -329,12 +330,21 @@ sampler samp_gi_ao_accum {Texture = tex_gi_ao_accum;};
 texture tex_accum_speed  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = R16F; MipLevels = 1;};
 sampler samp_accum_speed {Texture = tex_accum_speed;};
 
+texture tex_gi_ao_accum_prev  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = RGBA16F; MipLevels = YASSGI_MIP_LEVEL;};
+sampler samp_gi_ao_accum_prev {Texture = tex_gi_ao_accum_prev;};
+
+texture tex_accum_speed_prev  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = R16F; MipLevels = 1;};
+sampler samp_accum_speed_prev {Texture = tex_accum_speed_prev;};
+
 // gi & ao blur
 texture tex_gi_ao_blur1  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = RGBA16F;};
 sampler samp_gi_ao_blur1 {Texture = tex_gi_ao_blur1;};
 
 texture tex_gi_ao_blur2  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = RGBA16F;};
 sampler samp_gi_ao_blur2 {Texture = tex_gi_ao_blur2;};
+
+texture tex_gi_ao_blur3  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = RGBA16F;};
+sampler samp_gi_ao_blur3 {Texture = tex_gi_ao_blur3;};
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Functions
@@ -457,12 +467,28 @@ float2 r2(int n)
 	return frac(n * float2(0.754877666246692760049508896358532874940835564978799543103, 0.569840290998053265911399958119574964216147658520394151385));
 }
 
+/// @source https://zhuanlan.zhihu.com/p/390862782
+float rand4dTo1d(float4 value, float a, float4 b)
+{
+    float4 small_val = sin(value);
+    float random = dot(small_val, b);
+    random = frac(sin(random) * a);
+    return random;
+}
+float3 rand4dTo3d(float4 value){
+    return float3(
+        rand4dTo1d(value, 14375.5964, float4(15.637,76.243,37.168,83.511)),
+        rand4dTo1d(value, 14684.6034, float4(45.366, 23.168,65.918,57.514)),
+        rand4dTo1d(value, 14985.1739, float4(62.654, 88.467,25.111,61.875))
+    );
+}
+
 // return r, theta
 float2 sampleDisk(float2 rand2)
 {
     return float2(sqrt(rand2.x), 2 * PI * rand2.y);
 }
-float3 sampleHemisphereUniform(float2 rand2, float3 normal)
+float3 sampleHemisphereUniform(float2 rand2, float3 normal, out float pdf)
 {
     float cos_theta = rand2.x;
     float sin_theta = sqrt(1 - cos_theta * cos_theta);
@@ -472,6 +498,24 @@ float3 sampleHemisphereUniform(float2 rand2, float3 normal)
     float3 up_vec = abs(normal.z) < 0.999 ? float3(0, 0, 1) : float3(1, 0, 0);
     float3 tan_x = normalize(cross(up_vec, normal));
     float3 tan_y = cross(normal, tan_x);
+
+    pdf = 0.5 * RCP_PI;
+
+    return normalize(tan_x * h.x + tan_y * h.y + normal * h.z);
+}
+float3 sampleHemisphereCosWeighted(float2 rand2, float3 normal, out float pdf)
+{
+    float cos_theta = sqrt(rand2.x);
+    float sin_theta = sqrt(1 - cos_theta * cos_theta);
+    float phi = 2 * PI * rand2.y;
+
+    float3 h = float3(cos(phi) * sin_theta, sin(phi) * sin_theta, cos_theta);
+    float3 up_vec = abs(normal.z) < 0.999 ? float3(0, 0, 1) : float3(1, 0, 0);
+    float3 tan_x = normalize(cross(up_vec, normal));
+    float3 tan_y = cross(normal, tan_x);
+
+    pdf = cos_theta * RCP_PI;
+
     return normalize(tan_x * h.x + tan_y * h.y + normal * h.z);
 }
 
@@ -521,18 +565,6 @@ void simpleRayMarch(inout RayInfo ray)
 float getSpecularLobeHalfAngle(float roughness, float precent_volume)
 {
     return atan2( roughness * roughness * precent_volume, 1.0 - precent_volume );
-}
-
-float bsdf_OrenNayar(float roughness, float nov, float nol, float voh)
-{
-	float a = roughness * roughness;
-	float s = a;// / ( 1.29 + 0.5 * a );
-	float s2 = s * s;
-	float vol = 2 * voh * voh - 1;		// double angle identity
-	float cosri = vol - nov * nol;
-	float c1 = 1 - 0.5 * s2 / (s2 + 0.33);
-	float c2 = 0.45 * s2 / (s2 + 0.09) * cosri * ( cosri >= 0 ? rcp( max( nol, nov ) ) : 1 );
-	return ( c1 + c2 ) * ( 1 + roughness * 0.5 ) * RCP_PI;
 }
 
 // <---- Blur ---->
@@ -590,11 +622,6 @@ float4 spatialBlur(sampler gi_ao_sampler, float2 uv, float radius, float accum_s
         weightsum += w;
         sum += sample_gi * w;
     }
-    if(weightsum - init_weight < 0.01)
-    {
-        // weightsum -= init_weight;
-        // sum -= gi_ao * init_weight;
-    }
 
     sum /= weightsum;
 
@@ -612,12 +639,20 @@ void PS_SavePrev(
     g_prev = tex2Dfetch(samp_g, int2(uv * BUFFER_SIZE));
 }
 
+void PS_SavePrevGI(
+    in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
+    out float4 gi_ao_accum_prev : SV_Target0, out float4 accum_speed_prev : SV_Target1)
+{
+    gi_ao_accum_prev = tex2Dfetch(samp_gi_ao_accum, int2(uv * YASSGI_GI_BUFFER_SIZE));
+    accum_speed_prev = tex2Dfetch(samp_accum_speed, int2(uv * YASSGI_GI_BUFFER_SIZE));
+}
+
 void PS_InputSetup(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
     out float4 color : SV_Target0, out float4 g : SV_Target1)
 {
     // color
-    color.rgb = mul(tex2D(ReShade::BackBuffer, uv).rgb, g_colorInputMat);
+    color.rgb = mul(g_colorInputMat, tex2D(ReShade::BackBuffer, uv).rgb);
     color.a = 1;
 
     // g
@@ -641,26 +676,32 @@ void PS_GI(
     gi_ao = 0;
 
     float4 g = tex2D(samp_g, uv);
-
-    float3 pos_orig = uvToViewSpace(uv, g.w);
+    
     [branch]
     if(isNear(g.w) || isSky(g.w))  // leave sky alone
         return;
 
+    float3 pos_orig = uvToViewSpace(uv, g.w);
     float3 normal_orig = g.xyz;
     float3 viewdir_orig = normalize(pos_orig);
 
+    float3 color_orig = normalize(pow(tex2D(samp_color, uv).rgb, 0.5));
+
     float rcp_numsample = rcp(iNumSample);
 
+    float weightsum = 0;
     [loop]
     for(uint i = 0; i < iNumSample; ++i)
     {
-        float3 rand3 = tex2Dfetch(samp_blue_noise,
-            int2((uv * YASSGI_GI_BUFFER_SIZE + r2(iFrameCount + i) * YASSGI_NOISE_SIZE) % YASSGI_NOISE_SIZE)).xyz;
+        // float3 rand3 = tex2Dfetch(samp_blue_noise,
+        //     int2((uv * YASSGI_GI_BUFFER_SIZE + r2(iFrameCount + i) * YASSGI_NOISE_SIZE) % YASSGI_NOISE_SIZE)).xyz;
+        float3 rand3 = rand4dTo3d(float4(uv, iFrameCount * RCP_PI, i * RCP_PI));
+
+        float pdf;
 
         RayInfo ray;
         ray.orig = pos_orig;
-        float3 raydir = sampleHemisphereUniform(rand3.xy, normal_orig);
+        float3 raydir = sampleHemisphereCosWeighted(rand3.xy, normal_orig, pdf);
         ray.stride = raydir * fBaseStride * (1 + (rand3.z - 1) * fStrideJitter);
         ray.spread_exp = fSpreadExp;
         
@@ -670,7 +711,7 @@ void PS_GI(
             continue;
 
         // AO
-        gi_ao.w += rcp_numsample * RCP_PI * 0.5;  // TODO consider differnt sampling scheme
+        gi_ao.w += rcp_numsample;  // TODO consider differnt sampling scheme
 
         // normal check
         float3 normal_end = tex2Dlod(samp_g, float4(ray.uv, 0, 0)).xyz;
@@ -683,13 +724,9 @@ void PS_GI(
         hit_color *= is_backface ? fBackfaceLightMult : 1;
 
         // brdf
-        hit_color *= saturate(bsdf_OrenNayar(fMatRoughness,
-                                             max(dot(normal_orig, -viewdir_orig), EPS),
-                                             max(dot(normal_orig, raydir), EPS),
-                                             max(dot(raydir, -viewdir_orig), EPS)));
-                                        
-        // sampling
-        hit_color *= RCP_PI * 0.5;
+        hit_color *= color_orig;
+        hit_color *= PI;
+        hit_color = max(hit_color, 0);
         
         gi_ao.rgb += hit_color * rcp_numsample;
     }
@@ -705,10 +742,10 @@ void PS_PreBlur(
 
 void PS_Accumulation(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
-    out float4 gi_ao_accum : SV_Target0, out float4 o_accum_speed : SV_Target1)
+    out float4 gi_ao_accum : SV_Target0, out float4 accum_speed : SV_Target1)
 {
-    float4 gi_accum = tex2D(samp_gi_ao_accum, uv);
-    float accum_speed = tex2Dlod(samp_accum_speed, float4(uv, 1, 0)).x * iNumSample;
+    float4 gi_accum = tex2D(samp_gi_ao_accum_prev, uv);
+    float accum_speed_prev = tex2Dlod(samp_accum_speed_prev, float4(uv, 1, 0)).x * iNumSample;
     float4 gi_curr = tex2D(samp_gi_ao_preblur, uv);
     
     float4 g_curr = tex2D(samp_g, uv);
@@ -720,12 +757,12 @@ void PS_Accumulation(
     float z_delta = delta.w / g_curr.w;
     float quality = exp(-normal_delta * fNormalSensitivity * 2e3 - z_delta * fZSensitivity * 2e3);
 
-    float accum_speed_new = min(accum_speed * quality + 1, iMaxAccumFrames) ;
+    float accum_speed_new = min(accum_speed_prev * quality + 1, iMaxAccumFrames) ;
     float4 gi_new = lerp(gi_accum, gi_curr, rcp(accum_speed_new));
 
     // finalize
     gi_ao_accum = gi_new;
-    o_accum_speed = accum_speed_new;
+    accum_speed = accum_speed_new;
 }
 
 void PS_Blur1(
@@ -751,7 +788,7 @@ void PS_Blur2(
     float boost = 1.0 - getFadeBasedOnAccumulatedFrames(accum_speed);
     boost *= 1.0 - pow(1.0 - abs(normal.z), 5);
 
-    o = spatialBlur(samp_gi_ao_blur1, uv, fBlurRadius * (1.0 + 2.0 * boost) / 3.0, tex2D(samp_accum_speed, uv).x);
+    o = spatialBlur(samp_gi_ao_blur1, uv, fBlurRadius * (1.0 + 2.0 * boost) / 3.0 * 2, tex2D(samp_accum_speed, uv).x);
 }
 
 void PS_Blur3(
@@ -764,13 +801,14 @@ void PS_Blur3(
     float boost = 1.0 - getFadeBasedOnAccumulatedFrames(accum_speed);
     boost *= 1.0 - pow(1.0 - abs(normal.z), 5);
 
-    o = spatialBlur(samp_gi_ao_blur2, uv, fBlurRadius * (1.0 + 2.0 * boost) / 3.0, tex2D(samp_accum_speed, uv).x);
+    o = spatialBlur(samp_gi_ao_blur2, uv, fBlurRadius * (1.0 + 2.0 * boost) / 3.0 * 4, tex2D(samp_accum_speed, uv).x);
 }
 
 void PS_Display(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
     out float4 color : SV_Target)
 {
+    color = tex2D(ReShade::BackBuffer, uv);
     [branch]
     if(iViewMode == 0)  // None
     {
@@ -779,7 +817,7 @@ void PS_Display(
         color.rgb = albedo.rgb;
         color.rgb += gi_ao.rgb * fIlStrength;
         color.rgb /= 1 + gi_ao.w * fAoStrength;
-        color.rgb = saturate(mul(color.rgb, g_colorOutputMat));
+        color.rgb = saturate(mul(g_colorOutputMat, color.rgb));
     }
     else [branch]if(iViewMode == 1)  // Depth / Normal
     {
@@ -802,19 +840,19 @@ void PS_Display(
     {
         color = (iFrameCount / 300) % 2 ?
             rcp(1 + tex2D(samp_gi_ao, uv).w * fAoStrength) :
-            mul(tex2D(samp_gi_ao, uv).xyz * fIlStrength, g_colorOutputMat);
+            mul(g_colorOutputMat, tex2D(samp_gi_ao, uv).xyz * fIlStrength);
     }
     else [branch]if(iViewMode == 3)  // GI Preblur
     {
         color = (iFrameCount / 300) % 2 ?
             rcp(1 + tex2D(samp_gi_ao_preblur, uv).w * fAoStrength) :
-            mul(tex2D(samp_gi_ao_preblur, uv).xyz * fIlStrength, g_colorOutputMat);
+            mul(g_colorOutputMat, tex2D(samp_gi_ao_preblur, uv).xyz * fIlStrength);
     }
     else [branch]if(iViewMode == 4)  // GI Accum
     {
         color = (iFrameCount / 300) % 2 ?
             rcp(1 + tex2D(samp_gi_ao_accum, uv).w * fAoStrength) :
-            mul(tex2D(samp_gi_ao_accum, uv).xyz * fIlStrength, g_colorOutputMat);
+            mul(g_colorOutputMat, tex2D(samp_gi_ao_accum, uv).xyz * fIlStrength);
     }
 }
 
@@ -823,6 +861,12 @@ technique YASSGI{
         VertexShader = PostProcessVS;
         PixelShader = PS_SavePrev;
         RenderTarget0 = tex_g_prev;
+    }
+    pass {
+        VertexShader = PostProcessVS;
+        PixelShader = PS_SavePrevGI;
+        RenderTarget0 = tex_gi_ao_accum_prev;
+        RenderTarget1 = tex_accum_speed_prev;
     }
     pass {
         VertexShader = PostProcessVS;
