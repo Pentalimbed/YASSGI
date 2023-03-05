@@ -172,6 +172,14 @@ uniform float fSpreadExp <
     ui_step = 0.01;
 > = 0.3;
 
+uniform float fStrideJitter <
+    ui_type = "slider";
+    ui_category = "Sampling";
+    ui_label = "Stride Jitter";
+    ui_min = 0.0; ui_max = 1.0;
+    ui_step = 0.01;
+> = 0.8;
+
 uniform float fZThickness <
     ui_type = "slider";
     ui_category = "Sampling";
@@ -653,7 +661,7 @@ void PS_GI(
         RayInfo ray;
         ray.orig = pos_orig;
         float3 raydir = sampleHemisphereUniform(rand3.xy, normal_orig);
-        ray.stride = raydir * fBaseStride * (1 + (rand3.z - 1) * 0.5);
+        ray.stride = raydir * fBaseStride * (1 + (rand3.z - 1) * fStrideJitter);
         ray.spread_exp = fSpreadExp;
         
         simpleRayMarch(ray);
