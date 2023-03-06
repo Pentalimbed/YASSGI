@@ -300,7 +300,7 @@ uniform float fAlbedoSatPower <
     ui_category = "Mixing";
     ui_label = "Albedo Saturation Power";
     ui_tooltip = "Since ReShade has no way of knowing the true albedo of a surface separate from lighting,\n"
-        "any shader has to guess. A value of 0.0 tells the shader that everything are monochrome, and their\n"
+        "any shader has to guess. A value of 0.0 tells the shader that everything is monochrome, and its\n"
         "hue is the result of lighting. Greater value yields more saturated output on colored surfaces.\n";
     ui_min = 0.0; ui_max = 10.0;
     ui_step = 0.01;
@@ -350,7 +350,7 @@ sampler samp_gi_ao_preblur {Texture = tex_gi_ao_preblur;};
 texture tex_gi_ao_accum  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = RGBA16F; MipLevels = YASSGI_MIP_LEVEL;};
 sampler samp_gi_ao_accum {Texture = tex_gi_ao_accum;};
 
-texture tex_accum_speed  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = R16F; MipLevels = 1;};
+texture tex_accum_speed  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = R16F;};
 sampler samp_accum_speed {Texture = tex_accum_speed;};
 
 texture tex_gi_ao_accum_prev  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = RGBA16F; MipLevels = YASSGI_MIP_LEVEL;};
