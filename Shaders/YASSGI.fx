@@ -407,6 +407,7 @@ float linearDepthToZ(float depth) {return depth * RESHADE_DEPTH_LINEARIZATION_FA
 float getLinearDepth(float2 uv) {return ReShade::GetLinearizedDepth(uv);}
 float getZ(float2 uv) {return linearDepthToZ(getLinearDepth(uv));}
 
+// src: qUINT
 float3 uvToViewSpace(float2 uv, float z)
 {
     const float3 uvtoprojADD = float3(-tan(radians(iFov) * 0.5).xx, 1.0) * float2(1.0, BUFFER_WIDTH * BUFFER_RCP_HEIGHT).yxx;
