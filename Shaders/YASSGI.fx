@@ -323,7 +323,7 @@ uniform float fAlbedoNorm <
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 // blue noise
-texture tex_blue_noise   <source ="dh_rt_noise.png";> { Width = YASSGI_NOISE_SIZE; Height = YASSGI_NOISE_SIZE; Format = RGBA8; };
+texture tex_blue_noise   <source ="YASSGI_bleu.png";> { Width = YASSGI_NOISE_SIZE; Height = YASSGI_NOISE_SIZE; Format = RGBA8; };
 sampler samp_blue_noise                               { Texture = tex_blue_noise; AddressU = REPEAT; AddressV = REPEAT; AddressW = REPEAT;};
 
 // color
