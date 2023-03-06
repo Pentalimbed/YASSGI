@@ -128,7 +128,7 @@ uniform float2 fDepthRange <
     ui_label = "Weapon/Sky Depth Range";
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.001;
-> = float2(0.000, 0.999);
+> = float2(0.001, 0.999);
 
 uniform float fWeapDepthMult <
     ui_type = "slider";
@@ -154,7 +154,7 @@ uniform uint iNumSteps <
     ui_label = "Max Steps";
     ui_min = 1; ui_max = 32;
     ui_step = 1;
-> = 12;
+> = 8;
 
 uniform float fBaseStride <
     ui_type = "slider";
@@ -162,7 +162,7 @@ uniform float fBaseStride <
     ui_label = "Base Stride";
     ui_min = 0.01; ui_max = 10.0;
     ui_step = 0.01;
-> = 1.0;
+> = 1.6;
 
 uniform float fSpreadExp <
     ui_type = "slider";
@@ -170,7 +170,7 @@ uniform float fSpreadExp <
     ui_label = "Spread Exponent";
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
-> = 0.3;
+> = 0.7;
 
 uniform float fStrideJitter <
     ui_type = "slider";
@@ -178,7 +178,7 @@ uniform float fStrideJitter <
     ui_label = "Stride Jitter";
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
-> = 0.8;
+> = 0.75;
 
 uniform float fZThickness <
     ui_type = "slider";
@@ -186,7 +186,7 @@ uniform float fZThickness <
     ui_label = "Z Thickness";
     ui_min = 0.0; ui_max = 10.0;
     ui_step = 0.1;
-> = 4.0;
+> = 2.5;
 
 // <---- Shading ---->
 
@@ -222,9 +222,9 @@ uniform float fGeometrySensitivity <
     ui_category = "Spatial Blur";
     ui_label = "Geometry Sensitivity";
     ui_tooltip = "Maximum allowed deviation from local tangent plane.";
-    ui_min = 0.01; ui_max = 20.0;
+    ui_min = 0.01; ui_max = 30.0;
     ui_step = 0.01;
-> = 10.0;
+> = 20.0;
 
 // <---- Temporal Accumulation ---->
 
@@ -234,7 +234,7 @@ uniform int iMaxAccumFrames <
     ui_label = "Max Accumulated Frames";
     ui_min = 1; ui_max = 64;
     ui_step = 1;
-> = 32;
+> = 12;
 
 uniform float fZSensitivity <
     ui_type = "slider";
@@ -242,7 +242,7 @@ uniform float fZSensitivity <
     ui_label = "Z Sensitivity";
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
-> = 0.2;
+> = 1.0;
 
 uniform float fNormalSensitivity <
     ui_type = "slider";
@@ -250,7 +250,7 @@ uniform float fNormalSensitivity <
     ui_label = "Normal Sensitivity";
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
-> = 0.4;
+> = 1.0;
 
 // <---- Mixing ---->
 
@@ -273,11 +273,11 @@ uniform float fAoStrength <
 uniform float fLightSrcThres <
 	ui_type = "slider";
     ui_label = "Light Source Threshold";
-    ui_tooltip = "Only pixels with greater brightness are considered light-emitting.";
+    ui_tooltip = "Only pixels brighter than this are considered light-emitting.";
 	ui_category = "Mixing";
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
-> = 0.5;
+> = 0.1;
 
 uniform float fBackfaceLightMult <
     ui_type = "slider";
@@ -285,7 +285,7 @@ uniform float fBackfaceLightMult <
     ui_label = "Backface Lighting";
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
-> = 0.0;
+> = 0.05;
 
 uniform float fBounceMult <
     ui_type = "slider";
@@ -293,7 +293,30 @@ uniform float fBounceMult <
     ui_label = "Bounce Strength";
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
-> = 0.40;
+> = 0.1;
+
+uniform float fAlbedoSatPower <
+    ui_type = "slider";
+    ui_category = "Mixing";
+    ui_label = "Albedo Saturation Power";
+    ui_tooltip = "Since ReShade has no way of knowing the true albedo of a surface separate from lighting,\n"
+        "any shader has to guess. A value of 0.0 tells the shader that everything are monochrome, and their\n"
+        "hue is the result of lighting. Greater value yields more saturated output on colored surfaces.\n";
+    ui_min = 0.0; ui_max = 10.0;
+    ui_step = 0.01;
+> = 4.0;
+
+uniform float fAlbedoNorm <
+    ui_type = "slider";
+    ui_category = "Mixing";
+    ui_label = "Albedo Normalization";
+    ui_tooltip = "Since ReShade has no way of knowing the true albedo of a surface separate from lighting,\n"
+        "any shader has to guess. A value of 0.0 tells the shader that there is no lighting in the scene,\n"
+        "so dark surfaces are actually black. 1.0 says that all surfaces are in fact colored brightly, and\n"
+        "the variation in brightness are the result of illumination, rather than the texture pattern itself.";
+    ui_min = 0.0; ui_max = 1.0;
+    ui_step = 0.01;
+> = 1.0;
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Buffers
@@ -552,13 +575,10 @@ void simpleRayMarch(inout RayInfo ray)
             break;
 
         float z_curr = tex2Dlod(samp_g, float4(ray.uv, ray.spread_level, 0)).w;
-
+        ray.hit = ray.pos.z > z_curr && ray.pos.z < z_curr + fZThickness * len_mult;
         [branch]
-        if(ray.pos.z > z_curr && ray.pos.z < z_curr + fZThickness * len_mult)
-        {
-            ray.hit = true;
+        if(ray.hit)
             break;
-        }
     }
 }
 
@@ -596,9 +616,9 @@ float4 spatialBlur(sampler gi_ao_sampler, float2 uv, float radius, float accum_s
     float weightsum = init_weight;
     float4 sum = gi_ao * init_weight;
     [unroll]
-    for(uint n = 0; n < 16; ++n)
+    for(uint n = 0; n < 8; ++n)
     {
-        float3 offset = g_Poisson16[n];
+        float3 offset = g_Poisson8[n];
 
         float2 rotated_offset = mul(getRotateMatrix(iFrameCount * 2), offset.xy);
         float3 view_offset = tangent * rotated_offset.x + bitangent * rotated_offset.y;
@@ -685,7 +705,9 @@ void PS_GI(
     float3 normal_orig = g.xyz;
     float3 viewdir_orig = normalize(pos_orig);
 
-    float3 color_orig = normalize(pow(tex2D(samp_color, uv).rgb, 0.5));
+    float3 color_orig = tex2D(samp_color, uv).rgb;
+    float3 diff_color = pow(color_orig, fAlbedoSatPower * length(color_orig));
+    diff_color = saturate(lerp(diff_color, normalize(diff_color), fAlbedoNorm));
 
     float rcp_numsample = rcp(iNumSample);
 
@@ -724,7 +746,7 @@ void PS_GI(
         hit_color *= is_backface ? fBackfaceLightMult : 1;
 
         // brdf
-        hit_color *= color_orig;
+        hit_color *= diff_color;
         hit_color *= PI;
         hit_color = max(hit_color, 0);
         
