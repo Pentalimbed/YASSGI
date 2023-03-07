@@ -147,7 +147,7 @@ uniform float fWeapDepthMult <
     ui_type = "slider";
     ui_category = "Input";
     ui_label = "Weapon Depth Multiplier";
-    ui_tooltip = "Many FPS games render weapons as a super squeezed flat mesh.\n"
+    ui_tooltip = "Many FPS games squeeze weapon depth into a super flat pancake.\n"
         "You can check it in the depth/normal debug view. Red parts are the weapons.\n"
         "Crank this up to free them from oppression and bring them back to illumination.";
     ui_min = 1.0; ui_max = 100.0;
@@ -208,9 +208,9 @@ uniform float fBaseStride <
     ui_type = "slider";
     ui_category = "Sampling";
     ui_label = "Base Stride";
-    ui_min = 0.01; ui_max = 10.0;
+    ui_min = 0.01; ui_max = 50.0;
     ui_step = 0.01;
-> = 1.6;
+> = 20.0;
 
 uniform float fSpreadExp <
     ui_type = "slider";
@@ -715,6 +715,7 @@ void PS_GI(
         return;
 
     float3 pos_orig = uvToViewSpace(uv, g.w);
+    float depth_orig = zToLinearDepth(pos_orig.z);
     float3 normal_orig = g.xyz;
     float3 viewdir_orig = normalize(pos_orig);
 
@@ -737,18 +738,21 @@ void PS_GI(
         RayInfo ray;
         ray.orig = pos_orig;
         float3 raydir = sampleHemisphereCosWeighted(rand3.xy, normal_orig, pdf);
-        ray.stride = raydir * fBaseStride * (1 + (rand3.z - 1) * fStrideJitter);
+        ray.stride = raydir * fBaseStride * depth_orig * (1 + (rand3.z - 1) * fStrideJitter);
         ray.spread_exp = fSpreadExp;
         
         simpleRayMarch(ray);
         [branch]
         if(!ray.hit)
         {
+            // super cheese sky but looking good
             gi_ao.rgb += isInScreen(ray.uv) && isSky(tex2Dlod(samp_g, float4(ray.uv, 0, 0)).w) ?
                 tex2Dlod(samp_color, float4(ray.uv, ray.spread_level, 0)).rgb * diff_color * PI * fSkylightMult :
                 0;
             continue;
         } 
+
+        // Below part seems to be quite performance heavy
 
         // AO
         gi_ao.w += rcp_numsample;  // TODO consider differnt sampling scheme
