@@ -9,7 +9,7 @@
 
 /*  TODO
     - firefly suppression (possibly by history fix)
-    - optical flow reprojection  
+    v optical flow reprojection  
     - material properties
     - sky
     - use that blue noise somehow
@@ -57,6 +57,10 @@ namespace YASSGI
 // size of int, don't change.
 #define YASSGI_BITMASK_SIZE 32
 #define YASSGI_SECTOR_ANGLE (PI / YASSGI_BITMASK_SIZE)
+
+#ifndef YASSGI_USE_MOTION
+#   define YASSGI_USE_MOTION 0
+#endif
 
 // color space conversion matrices
 // src: https://www.colour-science.org/apps/  using CAT02
@@ -326,6 +330,14 @@ uniform float fAlbedoNorm <
 // Buffers
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
+}
+
+// motion vectors via other fx
+texture texMotionVectors          { Width = BUFFER_WIDTH;   Height = BUFFER_HEIGHT;   Format = RG16F; };
+sampler sMotionVectorTex         { Texture = texMotionVectors;  };
+
+namespace YASSGI
+{
 // blue noise
 texture tex_blue_noise   <source ="YASSGI_bleu.png";> { Width = YASSGI_NOISE_SIZE; Height = YASSGI_NOISE_SIZE; Format = RGBA8; };
 sampler samp_blue_noise                               { Texture = tex_blue_noise; AddressU = REPEAT; AddressV = REPEAT; AddressW = REPEAT;};
@@ -760,8 +772,14 @@ void PS_Accumulation(
     out float4 gi_ao_accum : SV_Target0, out float accum_speed : SV_Target1
 )
 {
-    float4 gi_accum = tex2D(samp_gi_ao_accum_1, uv);
-    float accum_speed_prev = tex2Dlod(samp_accum_speed_1, float4(uv, 1, 0)).x * iNumSample;
+#if YASSGI_USE_MOTION
+    float2 uv_prev = uv + tex2D(sMotionVectorTex, uv).xy;
+#else
+    float2 uv_prev = uv;
+#endif
+
+    float4 gi_accum = tex2D(samp_gi_ao_accum_1, uv_prev);
+    float accum_speed_prev = tex2Dlod(samp_accum_speed_1, float4(uv_prev, 1, 0)).x * iNumSample;
     float4 gi_curr = tex2D(samp_gi_ao_preblur, uv);
     
     float4 g_curr = tex2D(samp_g, uv);
