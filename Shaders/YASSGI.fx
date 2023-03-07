@@ -210,7 +210,7 @@ uniform float fBaseStride <
     ui_label = "Base Stride";
     ui_min = 0.01; ui_max = 10.0;
     ui_step = 0.01;
-> = 0.15;
+> = 1.0;
 
 uniform float fSpreadExp <
     ui_type = "slider";
