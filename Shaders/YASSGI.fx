@@ -208,9 +208,9 @@ uniform float fBaseStride <
     ui_type = "slider";
     ui_category = "Sampling";
     ui_label = "Base Stride";
-    ui_min = 0.01; ui_max = 50.0;
+    ui_min = 0.01; ui_max = 10.0;
     ui_step = 0.01;
-> = 20.0;
+> = 0.15;
 
 uniform float fSpreadExp <
     ui_type = "slider";
@@ -380,7 +380,7 @@ sampler samp_accum_speed {Texture = tex_accum_speed;};
 texture tex_gi_ao_accum_1  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = RGBA16F;};
 sampler samp_gi_ao_accum_1 {Texture = tex_gi_ao_accum_1;};
 
-texture tex_accum_speed_1  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = R16F; MipLevels = 1;};
+texture tex_accum_speed_1  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = R16F; MipLevels = 2;};
 sampler samp_accum_speed_1 {Texture = tex_accum_speed_1;};
 
 // gi & ao blur
@@ -715,7 +715,6 @@ void PS_GI(
         return;
 
     float3 pos_orig = uvToViewSpace(uv, g.w);
-    float depth_orig = zToLinearDepth(pos_orig.z);
     float3 normal_orig = g.xyz;
     float3 viewdir_orig = normalize(pos_orig);
 
@@ -738,7 +737,7 @@ void PS_GI(
         RayInfo ray;
         ray.orig = pos_orig;
         float3 raydir = sampleHemisphereCosWeighted(rand3.xy, normal_orig, pdf);
-        ray.stride = raydir * fBaseStride * depth_orig * (1 + (rand3.z - 1) * fStrideJitter);
+        ray.stride = raydir * fBaseStride * (1 + (rand3.z - 1) * fStrideJitter);
         ray.spread_exp = fSpreadExp;
         
         simpleRayMarch(ray);
@@ -746,6 +745,7 @@ void PS_GI(
         if(!ray.hit)
         {
             // super cheese sky but looking good
+            // I'd say even better than probes
             gi_ao.rgb += isInScreen(ray.uv) && isSky(tex2Dlod(samp_g, float4(ray.uv, 0, 0)).w) ?
                 tex2Dlod(samp_color, float4(ray.uv, ray.spread_level, 0)).rgb * diff_color * PI * fSkylightMult :
                 0;
