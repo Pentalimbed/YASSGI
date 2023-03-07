@@ -9,9 +9,9 @@
 
 /*  TODO
     - firefly suppression (possibly by history fix)
-    v optical flow reprojection  
+    o optical flow reprojection  
     - material properties
-    - sky
+    o sky (kinda)
     - use that blue noise somehow
     - bitmask il
 */
@@ -154,6 +154,38 @@ uniform float fWeapDepthMult <
     ui_step = 0.1;
 > = 1.0;
 
+uniform float fLightSrcThres <
+	ui_type = "slider";
+    ui_label = "Light Source Threshold";
+    ui_tooltip = "Only pixels brighter than this are considered light-emitting.";
+	ui_category = "Input";
+    ui_min = 0.0; ui_max = 1.0;
+    ui_step = 0.01;
+> = 0.1;
+
+uniform float fAlbedoSatPower <
+    ui_type = "slider";
+    ui_category = "Input";
+    ui_label = "Albedo Saturation Power";
+    ui_tooltip = "Since ReShade has no way of knowing the true albedo of a surface separate from lighting,\n"
+        "any shader has to guess. A value of 0.0 tells the shader that everything is monochrome, and its\n"
+        "hue is the result of lighting. Greater value yields more saturated output on colored surfaces.\n";
+    ui_min = 0.0; ui_max = 10.0;
+    ui_step = 0.01;
+> = 4.0;
+
+uniform float fAlbedoNorm <
+    ui_type = "slider";
+    ui_category = "Input";
+    ui_label = "Albedo Normalization";
+    ui_tooltip = "Since ReShade has no way of knowing the true albedo of a surface separate from lighting,\n"
+        "any shader has to guess. A value of 0.0 tells the shader that there is no lighting in the scene,\n"
+        "so dark surfaces are actually black. 1.0 says that all surfaces are in fact colored brightly, and\n"
+        "the variation in brightness are the result of illumination, rather than the texture pattern itself.";
+    ui_min = 0.0; ui_max = 1.0;
+    ui_step = 0.01;
+> = 1.0;
+
 // <---- Sampling ---->
 
 uniform uint iNumSample <
@@ -265,7 +297,7 @@ uniform float fDisocclThres <
 uniform float fIlStrength <
     ui_type = "slider";
     ui_category = "Mixing";
-    ui_label = "IL Strength";
+    ui_label = "IL";
     ui_min = 0.0; ui_max = 2.0;
     ui_step = 0.01;
 > = 1.0;
@@ -273,19 +305,10 @@ uniform float fIlStrength <
 uniform float fAoStrength <
     ui_type = "slider";
     ui_category = "Mixing";
-    ui_label = "AO Strength";
+    ui_label = "AO";
     ui_min = 0.0; ui_max = 2.0;
     ui_step = 0.01;
 > = 1.0;
-
-uniform float fLightSrcThres <
-	ui_type = "slider";
-    ui_label = "Light Source Threshold";
-    ui_tooltip = "Only pixels brighter than this are considered light-emitting.";
-	ui_category = "Mixing";
-    ui_min = 0.0; ui_max = 1.0;
-    ui_step = 0.01;
-> = 0.1;
 
 uniform float fBackfaceLightMult <
     ui_type = "slider";
@@ -295,36 +318,21 @@ uniform float fBackfaceLightMult <
     ui_step = 0.01;
 > = 0.05;
 
-uniform float fBounceMult <
+uniform float fSkylightMult <
     ui_type = "slider";
     ui_category = "Mixing";
-    ui_label = "Bounce Strength";
+    ui_label = "Skylight";
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
 > = 0.1;
 
-uniform float fAlbedoSatPower <
+uniform float fBounceMult <
     ui_type = "slider";
     ui_category = "Mixing";
-    ui_label = "Albedo Saturation Power";
-    ui_tooltip = "Since ReShade has no way of knowing the true albedo of a surface separate from lighting,\n"
-        "any shader has to guess. A value of 0.0 tells the shader that everything is monochrome, and its\n"
-        "hue is the result of lighting. Greater value yields more saturated output on colored surfaces.\n";
-    ui_min = 0.0; ui_max = 10.0;
-    ui_step = 0.01;
-> = 4.0;
-
-uniform float fAlbedoNorm <
-    ui_type = "slider";
-    ui_category = "Mixing";
-    ui_label = "Albedo Normalization";
-    ui_tooltip = "Since ReShade has no way of knowing the true albedo of a surface separate from lighting,\n"
-        "any shader has to guess. A value of 0.0 tells the shader that there is no lighting in the scene,\n"
-        "so dark surfaces are actually black. 1.0 says that all surfaces are in fact colored brightly, and\n"
-        "the variation in brightness are the result of illumination, rather than the texture pattern itself.";
+    ui_label = "Bounce";
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
-> = 1.0;
+> = 0.1;
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Buffers
@@ -735,7 +743,12 @@ void PS_GI(
         simpleRayMarch(ray);
         [branch]
         if(!ray.hit)
+        {
+            gi_ao.rgb += isInScreen(ray.uv) && isSky(tex2Dlod(samp_g, float4(ray.uv, 0, 0)).w) ?
+                tex2Dlod(samp_color, float4(ray.uv, ray.spread_level, 0)).rgb * diff_color * PI * fSkylightMult :
+                0;
             continue;
+        } 
 
         // AO
         gi_ao.w += rcp_numsample;  // TODO consider differnt sampling scheme
