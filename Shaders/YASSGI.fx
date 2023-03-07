@@ -7,6 +7,15 @@
     pos: view space coordinates
 */
 
+/*  TODO
+    - firefly suppression (possibly by history fix)
+    - optical flow reprojection  
+    - material properties
+    - sky
+    - use that blue noise somehow
+    - bitmask il
+*/
+
 #include "ReShade.fxh"
 
 namespace YASSGI
@@ -134,6 +143,9 @@ uniform float fWeapDepthMult <
     ui_type = "slider";
     ui_category = "Input";
     ui_label = "Weapon Depth Multiplier";
+    ui_tooltip = "Many FPS games render weapons as a super squeezed flat mesh.\n"
+        "You can check it in the depth/normal debug view. Red parts are the weapons.\n"
+        "Crank this up to free them from oppression and bring them back to illumination.";
     ui_min = 1.0; ui_max = 100.0;
     ui_step = 0.1;
 > = 1.0;
@@ -236,21 +248,13 @@ uniform int iMaxAccumFrames <
     ui_step = 1;
 > = 12;
 
-uniform float fZSensitivity <
+uniform float fDisocclThres <
     ui_type = "slider";
     ui_category = "Accumulation";
-    ui_label = "Z Sensitivity";
+    ui_label = "Disocclusion Threshold";
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
-> = 1.0;
-
-uniform float fNormalSensitivity <
-    ui_type = "slider";
-    ui_category = "Accumulation";
-    ui_label = "Normal Sensitivity";
-    ui_min = 0.0; ui_max = 1.0;
-    ui_step = 0.01;
-> = 1.0;
+> = 0.5;
 
 // <---- Mixing ---->
 
@@ -353,11 +357,11 @@ sampler samp_gi_ao_accum {Texture = tex_gi_ao_accum;};
 texture tex_accum_speed  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = R16F;};
 sampler samp_accum_speed {Texture = tex_accum_speed;};
 
-texture tex_gi_ao_accum_prev  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = RGBA16F; MipLevels = YASSGI_MIP_LEVEL;};
-sampler samp_gi_ao_accum_prev {Texture = tex_gi_ao_accum_prev;};
+texture tex_gi_ao_accum_1  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = RGBA16F;};
+sampler samp_gi_ao_accum_1 {Texture = tex_gi_ao_accum_1;};
 
-texture tex_accum_speed_prev  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = R16F; MipLevels = 1;};
-sampler samp_accum_speed_prev {Texture = tex_accum_speed_prev;};
+texture tex_accum_speed_1  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = R16F; MipLevels = 1;};
+sampler samp_accum_speed_1 {Texture = tex_accum_speed_1;};
 
 // gi & ao blur
 texture tex_gi_ao_blur1  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = RGBA16F;};
@@ -365,9 +369,6 @@ sampler samp_gi_ao_blur1 {Texture = tex_gi_ao_blur1;};
 
 texture tex_gi_ao_blur2  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = RGBA16F;};
 sampler samp_gi_ao_blur2 {Texture = tex_gi_ao_blur2;};
-
-texture tex_gi_ao_blur3  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = RGBA16F;};
-sampler samp_gi_ao_blur3 {Texture = tex_gi_ao_blur3;};
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Functions
@@ -637,7 +638,6 @@ float4 spatialBlur(sampler gi_ao_sampler, float2 uv, float radius, float accum_s
 
         // screen check
         w = isInScreen(sample_uv) ? w : 0.0;
-        sample_gi = w ? sample_gi : 0.0;
 
         // accumulate
         weightsum += w;
@@ -658,14 +658,6 @@ void PS_SavePrev(
     out float4 g_prev : SV_Target0)
 {
     g_prev = tex2Dfetch(samp_g, int2(uv * BUFFER_SIZE));
-}
-
-void PS_SavePrevGI(
-    in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
-    out float4 gi_ao_accum_prev : SV_Target0, out float4 accum_speed_prev : SV_Target1)
-{
-    gi_ao_accum_prev = tex2Dfetch(samp_gi_ao_accum, int2(uv * YASSGI_GI_BUFFER_SIZE));
-    accum_speed_prev = tex2Dfetch(samp_accum_speed, int2(uv * YASSGI_GI_BUFFER_SIZE));
 }
 
 void PS_InputSetup(
@@ -742,7 +734,7 @@ void PS_GI(
 
         // determine source color
         float3 hit_color = tex2Dlod(samp_color, float4(ray.uv, ray.spread_level, 0)).rgb;
-        hit_color += tex2Dlod(samp_gi_ao_accum, float4(ray.uv, ray.spread_level, 0)).rgb * fBounceMult;
+        hit_color += tex2Dlod(samp_gi_ao_accum_1, float4(ray.uv, ray.spread_level, 0)).rgb * fBounceMult;
         hit_color = length(hit_color) > fLightSrcThres ? hit_color : 0;
         hit_color *= is_backface ? fBackfaceLightMult : 1;
 
@@ -765,10 +757,11 @@ void PS_PreBlur(
 
 void PS_Accumulation(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
-    out float4 gi_ao_accum : SV_Target0, out float4 accum_speed : SV_Target1)
+    out float4 gi_ao_accum : SV_Target0, out float accum_speed : SV_Target1
+)
 {
-    float4 gi_accum = tex2D(samp_gi_ao_accum_prev, uv);
-    float accum_speed_prev = tex2Dlod(samp_accum_speed_prev, float4(uv, 1, 0)).x * iNumSample;
+    float4 gi_accum = tex2D(samp_gi_ao_accum_1, uv);
+    float accum_speed_prev = tex2Dlod(samp_accum_speed_1, float4(uv, 1, 0)).x * iNumSample;
     float4 gi_curr = tex2D(samp_gi_ao_preblur, uv);
     
     float4 g_curr = tex2D(samp_g, uv);
@@ -778,7 +771,8 @@ void PS_Accumulation(
     float4 delta = abs(g_curr - g_prev) / max(fFrameTime, 1.0);
     float normal_delta = dot(delta.xyz, delta.xyz);
     float z_delta = delta.w / g_curr.w;
-    float quality = exp(-normal_delta * fNormalSensitivity * 2e3 - z_delta * fZSensitivity * 2e3);
+    float quality = z_delta * abs(dot(g_curr.xyz, normalize(uvToViewSpace(uv, g_curr.w))));
+    quality = quality > fDisocclThres * 0.01 ? 0 : 1;
 
     float accum_speed_new = min(accum_speed_prev * quality + 1, iMaxAccumFrames) ;
     float4 gi_new = lerp(gi_accum, gi_curr, rcp(accum_speed_new));
@@ -786,6 +780,16 @@ void PS_Accumulation(
     // finalize
     gi_ao_accum = gi_new;
     accum_speed = accum_speed_new;
+}
+
+// Currently only copying...
+void PS_HistoryFix(
+    in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
+    out float4 gi_ao_hist_fix : SV_Target0, out float accum_speed : SV_Target1
+)
+{
+    gi_ao_hist_fix = tex2Dfetch(samp_gi_ao_accum, int2(uv * YASSGI_GI_BUFFER_SIZE));
+    accum_speed = tex2Dfetch(samp_accum_speed, int2(uv * YASSGI_GI_BUFFER_SIZE)).x;
 }
 
 void PS_Blur1(
@@ -798,7 +802,7 @@ void PS_Blur1(
     float boost = 1.0 - getFadeBasedOnAccumulatedFrames(accum_speed);
     boost *= 1.0 - pow(1.0 - abs(normal.z), 5);
 
-    o = spatialBlur(samp_gi_ao_accum, uv, fBlurRadius * (1.0 + 2.0 * boost) / 3.0, tex2D(samp_accum_speed, uv).x);
+    o = spatialBlur(samp_gi_ao_accum_1, uv, fBlurRadius * (1.0 + 2.0 * boost) / 3.0, tex2D(samp_accum_speed, uv).x);
 }
 
 void PS_Blur2(
@@ -887,12 +891,6 @@ technique YASSGI{
     }
     pass {
         VertexShader = PostProcessVS;
-        PixelShader = PS_SavePrevGI;
-        RenderTarget0 = tex_gi_ao_accum_prev;
-        RenderTarget1 = tex_accum_speed_prev;
-    }
-    pass {
-        VertexShader = PostProcessVS;
         PixelShader = PS_InputSetup;
         RenderTarget0 = tex_color;
         RenderTarget1 = tex_g;
@@ -915,6 +913,12 @@ technique YASSGI{
     }
     pass {
         VertexShader = PostProcessVS;
+        PixelShader = PS_HistoryFix;
+        RenderTarget0 = tex_gi_ao_accum_1;
+        RenderTarget1 = tex_accum_speed_1;
+    }
+    pass {
+        VertexShader = PostProcessVS;
         PixelShader = PS_Blur1;
         RenderTarget0 = tex_gi_ao_blur1;
     }
@@ -926,7 +930,7 @@ technique YASSGI{
     pass {
         VertexShader = PostProcessVS;
         PixelShader = PS_Blur3;
-        RenderTarget0 = tex_gi_ao_accum;
+        RenderTarget0 = tex_gi_ao_accum_1;
     }
     pass {
         VertexShader = PostProcessVS;
