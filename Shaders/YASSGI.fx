@@ -8,7 +8,7 @@
 */
 
 /*  TODO
-    - firefly suppression (possibly by history fix)
+    - firefly suppression (possibly by edge detection)
     o optical flow reprojection  
     - material properties
     o sky (kinda)
@@ -78,7 +78,7 @@ static const float3x3 g_ACEScgToSRGB = float3x3(
 #define g_colorInputMat g_sRGBToACEScg
 #define g_colorOutputMat g_ACEScgToSRGB
 
-// @source https://github.com/NVIDIAGameWorks/RayTracingDenoiser/blob/master/Shaders/Include/Poisson.hlsli
+// src: https://github.com/NVIDIAGameWorks/RayTracingDenoiser/blob/master/Shaders/Include/Poisson.hlsli
 // samples = 8, min distance = 0.5, average samples on radius = 2
 static const float3 g_Poisson8[8] =
 {
@@ -122,7 +122,7 @@ uniform float fFrameTime   < source = "frametime";  >;
 uniform int iViewMode <
 	ui_type = "combo";
     ui_label = "View Mode";
-    ui_items = "YASSGI\0Depth / Normal\0GI / AO (Raw)\0GI / AO (Pre-Blur)\0GI / AO (Accumulated)\0";
+    ui_items = "YASSGI\0Depth / Normal\0GI / AO (Raw)\0GI / AO (Pre-Blur)\0GI / AO (Accumulated)\0Accumulated Frames\0";
 > = 0;
 
 // <---- Input ---->
@@ -634,7 +634,7 @@ float4 spatialBlur(sampler gi_ao_sampler, float2 uv, float radius, float accum_s
     float3 tangent = kernel_basis[0] * view_radius;
     float3 bitangent = kernel_basis[1] * view_radius;
 
-    float init_weight = accum_speed / iMaxAccumFrames;
+    float init_weight = 0.001;
     float weightsum = init_weight;
     float4 sum = gi_ao * init_weight;
     [unroll]
@@ -652,9 +652,11 @@ float4 spatialBlur(sampler gi_ao_sampler, float2 uv, float radius, float accum_s
         float4 sample_g = tex2D(samp_g, sample_uv);
 
         // weighting
-        float w = exp(-0.66 * offset.z * offset.z);  // Base gaussian weight
-        w *= saturate(dot(sample_g.xyz, g.xyz));
-        w *= exp2(-abs(dot(sample_viewdir, g.xyz) - dot(sample_viewdir, sample_g.xyz)) / g.w * 1000 * fGeometrySensitivity);
+        // float w = exp(-0.66 * offset.z * offset.z);  // Base gaussian weight
+        float w = accum_speed < iMaxAccumFrames * 0.2 ? 1 : exp2(-abs(dot(sample_viewdir, g.xyz) - dot(sample_viewdir, sample_g.xyz)) / g.w * 1000 * fGeometrySensitivity);
+        // w *= lerp(1, saturate(dot(sample_g.xyz, g.xyz) * 0.5 + 0.5), init_weight);
+        // w *= lerp(1, lerp(0.01, 1, exp2(-abs(dot(sample_viewdir, g.xyz) - dot(sample_viewdir, sample_g.xyz)) / g.w * 1000 * fGeometrySensitivity)), init_weight);
+        // w = lerp(1, saturate(dot(sample_g.xyz, g.xyz) * 0.5 + 0.5), init_weight);
 
         // screen check
         w = isInScreen(sample_uv) ? w : 0.0;
@@ -796,16 +798,14 @@ void PS_Accumulation(
 #endif
 
     float4 gi_accum = tex2D(samp_gi_ao_accum_1, uv_prev);
-    float accum_speed_prev = tex2Dlod(samp_accum_speed_1, float4(uv_prev, 1, 0)).x * iNumSample;
+    float accum_speed_prev = tex2Dlod(samp_accum_speed_1, float4(uv_prev, 1, 0)).x;
     float4 gi_curr = tex2D(samp_gi_ao_preblur, uv);
     
     float4 g_curr = tex2D(samp_g, uv);
     float4 g_prev = tex2D(samp_g_prev, uv);
 
     // z & normal disocclusion
-    float4 delta = abs(g_curr - g_prev) / max(fFrameTime, 1.0);
-    float normal_delta = dot(delta.xyz, delta.xyz);
-    float z_delta = delta.w / g_curr.w;
+    float z_delta = abs(g_curr.w - g_prev.w) / g_curr.w / max(fFrameTime, 1.0);
     float quality = z_delta * abs(dot(g_curr.xyz, normalize(uvToViewSpace(uv, g_curr.w))));
     quality = quality > fDisocclThres * 0.01 ? 0 : 1;
 
@@ -915,6 +915,10 @@ void PS_Display(
         color = (iFrameCount / 300) % 2 ?
             rcp(1 + tex2D(samp_gi_ao_accum, uv).w * fAoStrength) :
             mul(g_colorOutputMat, tex2D(samp_gi_ao_accum, uv).xyz * fIlStrength);
+    }
+    else [branch]if(iViewMode == 5)  // Accum speed
+    {
+        color = tex2D(samp_accum_speed, uv).x / iMaxAccumFrames;
     }
 }
 
