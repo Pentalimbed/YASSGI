@@ -737,8 +737,6 @@ void PS_InputSetup(
         normal = normalize(normal * float3(1, 1, rcp(fWeapDepthMult)));
     }
 
-    float3 normal_color = getNormalFromColor(uv, )
-
     g = float4(normal, z);
 }
 
