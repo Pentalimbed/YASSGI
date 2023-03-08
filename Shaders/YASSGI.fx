@@ -147,7 +147,7 @@ uniform float fWeapDepthMult <
     ui_type = "slider";
     ui_category = "Input";
     ui_label = "Weapon Depth Multiplier";
-    ui_tooltip = "Many FPS games squeeze weapon depth into a super flat pancake.\n"
+    ui_tooltip = "Many FPS games squash their weapon into a super flat pancake.\n"
         "You can check it in the depth/normal debug view. Red parts are the weapons.\n"
         "Crank this up to free them from oppression and bring them back to illumination.";
     ui_min = 1.0; ui_max = 100.0;
@@ -340,9 +340,11 @@ uniform float fBounceMult <
 
 }
 
+#if YASSGI_USE_MOTION
 // motion vectors via other fx
 texture texMotionVectors          { Width = BUFFER_WIDTH;   Height = BUFFER_HEIGHT;   Format = RG16F; };
 sampler sMotionVectorTex         { Texture = texMotionVectors;  };
+#endif
 
 namespace YASSGI
 {
