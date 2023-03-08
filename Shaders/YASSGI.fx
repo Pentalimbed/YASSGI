@@ -8,7 +8,7 @@
 */
 
 /*  TODO
-    - firefly suppression (possibly by edge detection)
+    ? firefly suppression (blur is not enough)
     o optical flow reprojection  
     - material properties
     o sky (kinda)
@@ -36,8 +36,7 @@ namespace YASSGI
 #define YASSGI_NOISE_SIZE 512
 
 // 0 - Simple Tracing
-// (1) - Hi-Z Tracing
-// (2) - Bitmask IL https://arxiv.org/abs/2301.11376
+// (1) - Bitmask IL https://arxiv.org/abs/2301.11376
 #ifndef YASSGI_TECHNIQUE
 #   define YASSGI_TECHNIQUE 0
 #endif
@@ -54,8 +53,7 @@ namespace YASSGI
 #   define YASSGI_MIP_LEVEL 5
 #endif
 
-// size of int, don't change.
-#define YASSGI_BITMASK_SIZE 32
+#define YASSGI_BITMASK_SIZE 16
 #define YASSGI_SECTOR_ANGLE (PI / YASSGI_BITMASK_SIZE)
 
 #ifndef YASSGI_USE_MOTION
@@ -420,6 +418,11 @@ float3x3 getBasis( float3 normal )
     return float3x3( T, B, normal );
 }
 
+float getCoordAngle(float3 x, float3 y, float3 ivec)
+{
+    return atan2(dot(y, ivec), dot(x, ivec));
+}
+
 // <---- Depth & Normal ---->
 
 float zToLinearDepth(float z) {return (z - 1) * rcp(RESHADE_DEPTH_LINEARIZATION_FAR_PLANE);}
@@ -604,6 +607,41 @@ void simpleRayMarch(inout RayInfo ray)
     }
 }
 
+void bitmaskSample(
+    float2 uv, float3 pos_origin, float3 normal_proj, float3 tangent,
+    inout bool bitmask[YASSGI_BITMASK_SIZE],
+    out float3 ray_offset, out uint shaded_bits
+)
+{
+    shaded_bits = 0;
+
+    float3 pos_front = uvToViewSpace(uv, tex2Dlod(samp_g, float4(uv, 0, 0)).w);
+    float3 pos_back = pos_front + normalize(pos_front) * fZThickness;
+
+    ray_offset = pos_front - pos_origin;
+
+    float2 angles = float2(getCoordAngle(tangent, normal_proj, ray_offset),
+                           getCoordAngle(tangent, normal_proj, pos_back - pos_origin));
+    float angle_front = angles.x;
+    [branch]
+    if(angles.x < EPS)
+        return;
+    angles = float2(min(angles.x, angles.y), max(angles.x, angles.y));
+
+    float2 sector_range = float2(0, YASSGI_SECTOR_ANGLE);
+    bool front_occluded = false;
+    [unroll]
+    for(int i = 0; i < YASSGI_BITMASK_SIZE; ++i)
+    {
+        bool occluded = (min(sector_range.y, angles.y) - max(sector_range.x, angles.x)) >= 0.5 * YASSGI_SECTOR_ANGLE;
+        front_occluded = front_occluded || (bitmask[i] && (angle_front > sector_range.x) && (angle_front < sector_range.y));
+        shaded_bits += occluded && !bitmask[i];
+        bitmask[i] = bitmask[i] || occluded;
+        sector_range += YASSGI_SECTOR_ANGLE;
+    }
+    shaded_bits *= !front_occluded;
+}
+
 float getSpecularLobeHalfAngle(float roughness, float precent_volume)
 {
     return atan2( roughness * roughness * precent_volume, 1.0 - precent_volume );
@@ -614,8 +652,8 @@ float getSpecularLobeHalfAngle(float roughness, float precent_volume)
 float getFadeBasedOnAccumulatedFrames( float accum_speed )
 {
     float history_fix_frame_num = 3;
-    float a = history_fix_frame_num * 2.0 / 3.0 + 1e-6;
-    float b = history_fix_frame_num * 4.0 / 3.0 + 2e-6;
+    float a = history_fix_frame_num * 2.0 * 0.3333 + 1e-6;
+    float b = history_fix_frame_num * 4.0 * 0.3333 + 2e-6;
 
     return saturate((accum_speed - a) / (b - a));
 }
@@ -653,10 +691,9 @@ float4 spatialBlur(sampler gi_ao_sampler, float2 uv, float radius, float accum_s
 
         // weighting
         // float w = exp(-0.66 * offset.z * offset.z);  // Base gaussian weight
-        float w = accum_speed < iMaxAccumFrames * 0.2 ? 1 : exp2(-abs(dot(sample_viewdir, g.xyz) - dot(sample_viewdir, sample_g.xyz)) / g.w * 1000 * fGeometrySensitivity);
-        // w *= lerp(1, saturate(dot(sample_g.xyz, g.xyz) * 0.5 + 0.5), init_weight);
-        // w *= lerp(1, lerp(0.01, 1, exp2(-abs(dot(sample_viewdir, g.xyz) - dot(sample_viewdir, sample_g.xyz)) / g.w * 1000 * fGeometrySensitivity)), init_weight);
-        // w = lerp(1, saturate(dot(sample_g.xyz, g.xyz) * 0.5 + 0.5), init_weight);
+        float w = saturate(dot(sample_g.xyz, g.xyz) * 0.5 + 0.5);
+        w *= exp2(-abs(dot(sample_viewdir, g.xyz) - dot(sample_viewdir, sample_g.xyz)) / g.w * 1000 * fGeometrySensitivity);
+        w = accum_speed < iMaxAccumFrames * 0.2 ? 1 : w;
 
         // screen check
         w = isInScreen(sample_uv) ? w : 0.0;
@@ -700,9 +737,12 @@ void PS_InputSetup(
         normal = normalize(normal * float3(1, 1, rcp(fWeapDepthMult)));
     }
 
+    float3 normal_color = getNormalFromColor(uv, )
+
     g = float4(normal, z);
 }
 
+#if YASSGI_TECHNIQUE == 0
 void PS_GI(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
     out float4 gi_ao : SV_Target0
@@ -754,8 +794,6 @@ void PS_GI(
             continue;
         } 
 
-        // Below part seems to be quite performance heavy
-
         // AO
         gi_ao.w += rcp_numsample;  // TODO consider differnt sampling scheme
 
@@ -777,6 +815,107 @@ void PS_GI(
         gi_ao.rgb += hit_color * rcp_numsample;
     }
 }
+#else
+void PS_BitMaskGI(
+    in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
+    out float4 gi_ao : SV_Target0
+)
+{
+    gi_ao = 0;
+
+    float4 g = tex2D(samp_g, uv);
+    
+    [branch]
+    if(isNear(g.w) || isSky(g.w))  // leave sky alone
+        return;
+
+    float3 pos_orig = uvToViewSpace(uv, g.w);
+    float3 normal_orig = g.xyz;
+
+    float3 color_orig = tex2D(samp_color, uv).rgb;
+    float3 diff_color = pow(color_orig, fAlbedoSatPower * length(color_orig));
+    diff_color = saturate(lerp(diff_color, normalize(diff_color), fAlbedoNorm));
+
+    float3 rand3 = rand4dTo3d(float4(uv, iFrameCount * RCP_PI, 0));
+    float3 dir = float3(1, 0, 0);
+    sincos(rand3.x * 2 * PI, dir.y, dir.x);
+    float2 stride = dir.xy * fBaseStride * 10.0 * ReShade::PixelSize / YASSGI_RENDER_SCALE * (1 + (rand3.y - 1) * fStrideJitter);
+
+    float3 normal_plane = normalize(cross(pos_orig, dir));
+    float3 normal_proj = normalize(normal_orig - normal_plane * dot(normal_orig, normal_plane));
+    float3 tangent = normalize(cross(normal_plane, normal_proj));
+    
+    bool bitmask[YASSGI_BITMASK_SIZE];
+    [unroll]
+    for(int i = 0; i < YASSGI_BITMASK_SIZE; ++i)
+        bitmask[i] = 0;
+    
+    float2 uv_offset = 0;
+    bool oos[2] = {false, false};
+    [loop]
+    for(int i = 0; i < iNumSteps * 2; ++i)
+    {   
+        float spread_level = (i >> 1) * fSpreadExp;
+        float len_mult = exp2(spread_level);
+
+        uv_offset = -uv_offset + ((i + 1) % 2) * stride * len_mult;
+        float2 uv_curr = uv + uv_offset;
+        
+        bool in_screen = isInScreen(uv_curr);
+        oos[0] = i % 2 ? oos[0] : !in_screen;
+        oos[1] = i % 2 ? in_screen : oos[1];
+        [branch]
+        if(oos[i % 2])
+            continue;
+
+        float4 g_curr = tex2Dlod(samp_g, float4(uv_curr, 0, 0));
+        float3 pos_front = uvToViewSpace(uv_curr, g_curr.w);
+        float3 pos_back = pos_front + normalize(pos_front) * fZThickness;
+        float2 angles = float2(getCoordAngle(tangent, normal_proj, pos_front - pos_orig),
+                               getCoordAngle(tangent, normal_proj, pos_back - pos_orig));
+        [branch]
+        if(angles.x < EPS)
+            continue;
+
+        float2 angles_minmax = float2(min(angles.x, angles.y), max(angles.x, angles.y));
+        float2 angles_sector = float2(0, YASSGI_SECTOR_ANGLE);
+        bool front_occluded = false;
+        int shaded_bits = 0;
+        [unroll]
+        for(int sec = 0; sec < YASSGI_BITMASK_SIZE; ++sec)
+        {
+            bool occluded = min(angles_sector.y, angles_minmax.y) - max(angles_sector.x, angles_minmax.x) >= 0.5 * YASSGI_SECTOR_ANGLE;
+            front_occluded = front_occluded || (bitmask[sec] && (angles.x > angles_sector.x) && (angles.x < angles_sector.y));
+            shaded_bits += occluded && !bitmask[sec];
+            bitmask[sec] = bitmask[sec] || occluded;
+            angles_sector += YASSGI_SECTOR_ANGLE;
+        }
+        
+        [branch]
+        if(front_occluded)
+            continue;
+        
+        // normal check
+        float3 raydir = normalize(pos_front - pos_orig);
+        bool is_backface = dot(g_curr.xyz, raydir) > -EPS;
+
+        // determine source color
+        float3 hit_color = tex2Dlod(samp_color, float4(uv_curr, spread_level, 0)).rgb;
+        hit_color += tex2Dlod(samp_gi_ao_accum_1, float4(uv_curr, spread_level, 0)).rgb * fBounceMult;
+        hit_color = length(hit_color) > fLightSrcThres ? hit_color : 0;
+        hit_color *= is_backface ? fBackfaceLightMult : 1;
+
+        hit_color *= shaded_bits * rcp(YASSGI_BITMASK_SIZE) * saturate(dot(normal_orig, raydir));
+
+        gi_ao.rgb += hit_color;
+    }
+
+    [unroll]
+    for(int i = 0; i < YASSGI_BITMASK_SIZE; ++i)
+        gi_ao.w += bitmask[i] * rcp(YASSGI_BITMASK_SIZE);
+    gi_ao.w = 1 - gi_ao.w;
+}
+#endif
 
 void PS_PreBlur(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
@@ -934,11 +1073,19 @@ technique YASSGI{
         RenderTarget0 = tex_color;
         RenderTarget1 = tex_g;
     }
+#if YASSGI_TECHNIQUE == 0
     pass {
         VertexShader = PostProcessVS;
         PixelShader = PS_GI;
         RenderTarget0 = tex_gi_ao;
     }
+#else
+    pass {
+        VertexShader = PostProcessVS;
+        PixelShader = PS_BitMaskGI;
+        RenderTarget0 = tex_gi_ao;
+    }
+#endif
     pass {
         VertexShader = PostProcessVS;
         PixelShader = PS_PreBlur;
