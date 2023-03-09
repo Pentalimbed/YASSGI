@@ -182,7 +182,7 @@ uniform float fAlbedoNorm <
         "the variation in brightness are the result of illumination, rather than the texture pattern itself.";
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
-> = 1.0;
+> = 0.8;
 
 // <---- Sampling ---->
 
@@ -193,7 +193,7 @@ uniform uint iNumSample <
     ui_label = "Sample Count";
     ui_min = 1; ui_max = 32;
     ui_step = 1;
-> = 4;
+> = 6;
 #endif
 
 uniform uint iNumSteps <
@@ -209,6 +209,14 @@ uniform float fBaseStride <
     ui_category = "Sampling";
     ui_label = "Base Stride";
     ui_min = 0.01; ui_max = 10.0;
+    ui_step = 0.01;
+> = 8.0;
+
+uniform float fDepthScaledStride <
+    ui_type = "slider";
+    ui_category = "Sampling";
+    ui_label = "Depth Scaled Stride";
+    ui_min = 0.00; ui_max = 1.0;
     ui_step = 0.01;
 > = 1.0;
 
@@ -255,7 +263,7 @@ uniform float fPreBlurRadius <
     ui_label = "Pre-Blur Radius";
     ui_min = 0.0; ui_max = 50.0;
     ui_step = 1.0;
-> = 30.0;
+> = 12.0;
 
 uniform float fBlurRadius <
     ui_type = "slider";
@@ -263,16 +271,16 @@ uniform float fBlurRadius <
     ui_label = "Blur Radius";
     ui_min = 0.0; ui_max = 50.0;
     ui_step = 1.0;
-> = 15.0;
+> = 12.0;
 
 uniform float fGeometrySensitivity <
     ui_type = "slider";
     ui_category = "Spatial Blur";
     ui_label = "Geometry Sensitivity";
     ui_tooltip = "Maximum allowed deviation from local tangent plane.";
-    ui_min = 0.01; ui_max = 30.0;
+    ui_min = 0.01; ui_max = 1.0;
     ui_step = 0.01;
-> = 20.0;
+> = 0.5;
 
 // <---- Temporal Accumulation ---->
 
@@ -324,7 +332,7 @@ uniform float fSkylightMult <
     ui_label = "Skylight";
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
-> = 0.1;
+> = 0.2;
 
 uniform float fBounceMult <
     ui_type = "slider";
@@ -699,7 +707,7 @@ float4 spatialBlur(sampler gi_ao_sampler, float2 uv, float radius, float accum_s
         // weighting
         // float w = exp(-0.66 * offset.z * offset.z);  // Base gaussian weight
         float w = saturate(dot(sample_g.xyz, g.xyz) * 0.5 + 0.5);
-        w *= exp2(-abs(dot(sample_viewdir, g.xyz) - dot(sample_viewdir, sample_g.xyz)) / g.w * 10000 * fGeometrySensitivity);
+        w *= exp2(-abs(dot(sample_viewdir, g.xyz) - dot(sample_viewdir, sample_g.xyz)) / g.w * 1000000 * fGeometrySensitivity);
         w = accum_speed < iMaxAccumFrames * 0.2 ? 1 : w;
 
         // screen check
@@ -787,6 +795,7 @@ void PS_GI(
         ray.orig = pos_orig;
         float3 raydir = sampleHemisphereCosWeighted(rand3.xy, normal_orig, pdf);
         ray.stride = raydir * fBaseStride * (1 + (rand3.z - 1) * fStrideJitter);
+        ray.stride *= lerp(1, max(EPS, zToLinearDepth(pos_orig.z)), fDepthScaledStride);
         ray.spread_exp = fSpreadExp;
         
         simpleRayMarch(ray);
