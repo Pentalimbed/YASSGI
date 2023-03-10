@@ -951,7 +951,7 @@ void PS_Accumulation(
     // z & normal disocclusion
     float z_delta = abs(g_curr.w - g_prev.w) / g_curr.w / max(fFrameTime, 1.0);
     float delta = z_delta * abs(dot(g_curr.xyz, normalize(uvToViewSpace(uv, g_curr.w))));  // Geometry
-    delta += length(fakeAlbedo(color_prev) - fakeAlbedo(color_curr)) * 0.1;
+    delta += length(fakeAlbedo(color_prev) - fakeAlbedo(color_curr)) * 0.05;
     float quality = delta > fDisocclThres * 0.01 ? 0 : 1;
 
     float accum_speed_new = min(accum_speed_prev * quality + 1, iMaxAccumFrames) ;
