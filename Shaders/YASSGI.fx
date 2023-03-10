@@ -435,7 +435,7 @@ float getCoordAngle(float3 x, float3 y, float3 ivec)
     return atan2(dot(y, ivec), dot(x, ivec));
 }
 
-// <---- Depth & Normal ---->
+// <---- Input ---->
 
 float zToLinearDepth(float z) {return (z - 1) * rcp(RESHADE_DEPTH_LINEARIZATION_FAR_PLANE);}
 float linearDepthToZ(float depth) {return depth * RESHADE_DEPTH_LINEARIZATION_FAR_PLANE + 1;}
@@ -517,6 +517,13 @@ bool isInScreen(float2 uv)
 float getFrustumSize(float z)
 {
     return 2.0f * z * tan(radians(iFov) * 0.5);
+}
+
+float3 fakeAlbedo(float3 color)
+{
+    float3 albedo = pow(color, fAlbedoSatPower * length(color));
+    albedo = saturate(lerp(albedo, normalize(albedo), fAlbedoNorm));
+    return albedo;
 }
 
 // <---- Random & Sampling ---->
@@ -774,8 +781,7 @@ void PS_GI(
     float3 viewdir_orig = normalize(pos_orig);
 
     float3 color_orig = tex2D(samp_color, uv).rgb;
-    float3 diff_color = pow(color_orig, fAlbedoSatPower * length(color_orig));
-    diff_color = saturate(lerp(diff_color, normalize(diff_color), fAlbedoNorm));
+    float3 albedo = fakeAlbedo(color_orig);
 
 #if YASSGI_TECHNIQUE == 0
 
@@ -805,7 +811,7 @@ void PS_GI(
             // super cheese sky but looking good
             // I'd say even better than probes
             gi_ao.rgb += isInScreen(ray.uv) && isSky(tex2Dlod(samp_g, float4(ray.uv, 0, 0)).w) ?
-                tex2Dlod(samp_color, float4(ray.uv, ray.spread_level, 0)).rgb * diff_color * PI * fSkylightMult * rcp_numsample :
+                tex2Dlod(samp_color, float4(ray.uv, ray.spread_level, 0)).rgb * albedo * PI * fSkylightMult * rcp_numsample :
                 0;
             continue;
         } 
@@ -823,7 +829,7 @@ void PS_GI(
         hit_color *= is_backface ? fBackfaceLightMult : 1;
 
         // brdf
-        hit_color *= diff_color;
+        hit_color *= albedo;
         hit_color *= PI;
         hit_color = max(hit_color, 0);
         
@@ -873,7 +879,7 @@ void PS_GI(
         if(angles.x < EPS || isNear(pos_front.z) || isSky(pos_front.z))
         {
             gi_ao.rgb += (angles.x > EPS) && isSky(pos_front.z) ?
-                tex2Dlod(samp_color, float4(uv_curr, spread_level, 0)).rgb * diff_color * PI * fSkylightMult :
+                tex2Dlod(samp_color, float4(uv_curr, spread_level, 0)).rgb * albedo * PI * fSkylightMult :
                 0;
             continue;
         }
@@ -907,6 +913,7 @@ void PS_GI(
         hit_color = length(hit_color) > fLightSrcThres ? hit_color : 0;
         hit_color *= is_backface ? fBackfaceLightMult : 1;
 
+        hit_color *= albedo;
         hit_color *= shaded_bits * rcp(YASSGI_BITMASK_SIZE) * saturate(dot(normal_orig, raydir));
         hit_color *= 2 * PI;  // for no reason
 
@@ -918,15 +925,6 @@ void PS_GI(
         gi_ao.w += bitmask[i] * rcp(YASSGI_BITMASK_SIZE);
     gi_ao.w = 1 - gi_ao.w;
 #endif
-}
-
-
-void PS_PreBlur(
-    in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
-    out float4 o : SV_Target0
-)
-{
-    o = spatialBlur(samp_gi_ao, uv, fPreBlurRadius, 1);
 }
 
 void PS_Accumulation(
@@ -942,15 +940,19 @@ void PS_Accumulation(
 
     float4 gi_accum = tex2D(samp_gi_ao_accum_1, uv_prev);
     float accum_speed_prev = tex2Dlod(samp_accum_speed_1, float4(uv_prev, 1, 0)).x;
-    float4 gi_curr = tex2D(samp_gi_ao_preblur, uv);
+    float4 gi_curr = tex2D(samp_gi_ao, uv);
     
     float4 g_curr = tex2D(samp_g, uv);
-    float4 g_prev = tex2D(samp_g_prev, uv);
+    float4 g_prev = tex2D(samp_g_prev, uv_prev);
+
+    float3 color_curr = tex2D(samp_color, uv).rgb;
+    float3 color_prev = tex2D(samp_color, uv_prev).rgb;
 
     // z & normal disocclusion
     float z_delta = abs(g_curr.w - g_prev.w) / g_curr.w / max(fFrameTime, 1.0);
-    float quality = z_delta * abs(dot(g_curr.xyz, normalize(uvToViewSpace(uv, g_curr.w))));
-    quality = quality > fDisocclThres * 0.01 ? 0 : 1;
+    float delta = z_delta * abs(dot(g_curr.xyz, normalize(uvToViewSpace(uv, g_curr.w))));  // Geometry
+    delta += length(fakeAlbedo(color_prev) - fakeAlbedo(color_curr)) * 0.1;
+    float quality = delta > fDisocclThres * 0.01 ? 0 : 1;
 
     float accum_speed_new = min(accum_speed_prev * quality + 1, iMaxAccumFrames) ;
     float4 gi_new = lerp(gi_accum, gi_curr, rcp(accum_speed_new));
@@ -968,45 +970,8 @@ void PS_HistoryFix(
 {
     gi_ao_hist_fix = tex2Dfetch(samp_gi_ao_accum, int2(uv * YASSGI_GI_BUFFER_SIZE));
     accum_speed = tex2Dfetch(samp_accum_speed, int2(uv * YASSGI_GI_BUFFER_SIZE)).x;
-}
 
-void PS_Blur1(
-    in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
-    out float4 o : SV_Target0
-)
-{
-    float3 normal = tex2D(samp_g, uv).xyz;
-    float accum_speed = tex2D(samp_accum_speed, uv).x;
-    float boost = 1.0 - getFadeBasedOnAccumulatedFrames(accum_speed);
-    boost *= 1.0 - pow(1.0 - abs(normal.z), 5);
-
-    o = spatialBlur(samp_gi_ao_accum_1, uv, fBlurRadius * (1.0 + 2.0 * boost) / 3.0, tex2D(samp_accum_speed, uv).x);
-}
-
-void PS_Blur2(
-    in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
-    out float4 o : SV_Target0
-)
-{
-    float3 normal = tex2D(samp_g, uv).xyz;
-    float accum_speed = tex2D(samp_accum_speed, uv).x;
-    float boost = 1.0 - getFadeBasedOnAccumulatedFrames(accum_speed);
-    boost *= 1.0 - pow(1.0 - abs(normal.z), 5);
-
-    o = spatialBlur(samp_gi_ao_blur1, uv, fBlurRadius * (1.0 + 2.0 * boost) / 3.0 * 2, tex2D(samp_accum_speed, uv).x);
-}
-
-void PS_Blur3(
-    in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
-    out float4 o : SV_Target0
-)
-{
-    float3 normal = tex2D(samp_g, uv).xyz;
-    float accum_speed = tex2D(samp_accum_speed, uv).x;
-    float boost = 1.0 - getFadeBasedOnAccumulatedFrames(accum_speed);
-    boost *= 1.0 - pow(1.0 - abs(normal.z), 5);
-
-    o = spatialBlur(samp_gi_ao_blur2, uv, fBlurRadius * (1.0 + 2.0 * boost) / 3.0 * 4, tex2D(samp_accum_speed, uv).x);
+    
 }
 
 void PS_Display(
@@ -1084,11 +1049,6 @@ technique YASSGI{
     }
     pass {
         VertexShader = PostProcessVS;
-        PixelShader = PS_PreBlur;
-        RenderTarget0 = tex_gi_ao_preblur;
-    }
-    pass {
-        VertexShader = PostProcessVS;
         PixelShader = PS_Accumulation;
         RenderTarget0 = tex_gi_ao_accum;
         RenderTarget1 = tex_accum_speed;
@@ -1098,21 +1058,6 @@ technique YASSGI{
         PixelShader = PS_HistoryFix;
         RenderTarget0 = tex_gi_ao_accum_1;
         RenderTarget1 = tex_accum_speed_1;
-    }
-    pass {
-        VertexShader = PostProcessVS;
-        PixelShader = PS_Blur1;
-        RenderTarget0 = tex_gi_ao_blur1;
-    }
-    pass {
-        VertexShader = PostProcessVS;
-        PixelShader = PS_Blur2;
-        RenderTarget0 = tex_gi_ao_blur2;
-    }
-    pass {
-        VertexShader = PostProcessVS;
-        PixelShader = PS_Blur3;
-        RenderTarget0 = tex_gi_ao_accum_1;
     }
     pass {
         VertexShader = PostProcessVS;
