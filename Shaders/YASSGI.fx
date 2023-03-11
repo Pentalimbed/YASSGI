@@ -120,7 +120,7 @@ uniform float fFrameTime   < source = "frametime";  >;
 uniform int iViewMode <
 	ui_type = "combo";
     ui_label = "View Mode";
-    ui_items = "YASSGI\0Depth / Normal\0GI / AO (Raw)\0GI / AO (Accumulated)\0GI / AO (Blurred)\0Accumulated Frames\0";
+    ui_items = "YASSGI\0Depth / Normal\0Fake Albedo\0GI / AO (Raw)\0GI / AO (Accumulated)\0GI / AO (Blurred)\0Accumulated Frames\0";
 > = 0;
 
 // <---- Input ---->
@@ -659,93 +659,22 @@ float getSpecularLobeHalfAngle(float roughness, float precent_volume)
 
 // <---- Blur ---->
 
-// float getFadeBasedOnAccumulatedFrames( float hist_len )
-// {
-//     float history_fix_frame_num = 3;
-//     float a = history_fix_frame_num * 2.0 * 0.3333 + 1e-6;
-//     float b = history_fix_frame_num * 4.0 * 0.3333 + 2e-6;
-
-//     return saturate((hist_len - a) / (b - a));
-// }
-
-// float4 spatialBlur(sampler gi_ao_sampler, float2 uv, float radius, float hist_len)
-// {
-//     float4 gi_ao = tex2D(gi_ao_sampler, uv);
-
-//     float4 g = tex2D(samp_g, uv);
-//     float3 view_pos = uvToViewSpace(uv, g.w);
-//     float frustum_size = getFrustumSize(g.w);
-
-//     // normal dir skew
-//     float3x3 kernel_basis = getBasis(normalize(lerp(g.xyz, float3(0,0,-1), 0.25)));
-//     float view_radius = radius * frustum_size * BUFFER_RCP_HEIGHT;
-//     float3 tangent = kernel_basis[0] * view_radius;
-//     float3 bitangent = kernel_basis[1] * view_radius;
-
-//     float init_weight = 0.001;
-//     float weightsum = init_weight;
-//     float4 sum = gi_ao * init_weight;
-//     [unroll]
-//     for(uint n = 0; n < 8; ++n)
-//     {
-//         float3 offset = g_Poisson8[n];
-
-//         float2 rotated_offset = mul(getRotateMatrix(iFrameCount * 2), offset.xy);
-//         float3 view_offset = tangent * rotated_offset.x + bitangent * rotated_offset.y;
-//         float3 sample_pos = view_pos + view_offset;
-//         float3 sample_viewdir = normalize(sample_pos);
-//         float2 sample_uv = viewSpaceToUv(sample_pos);
-
-//         float4 sample_gi = tex2D(gi_ao_sampler, sample_uv);
-//         float4 sample_g = tex2D(samp_g, sample_uv);
-
-//         // weighting
-//         // float w = exp(-0.66 * offset.z * offset.z);  // Base gaussian weight
-//         float w = saturate(dot(sample_g.xyz, g.xyz) * 0.5 + 0.5);
-//         w *= exp2(-abs(dot(sample_viewdir, g.xyz) - dot(sample_viewdir, sample_g.xyz)) / g.w * 1000000 * fGeometrySensitivity);
-//         w = hist_len < iMaxAccumFrames * 0.2 ? 1 : w;
-
-//         // screen check
-//         w = isInScreen(sample_uv) ? w : 0.0;
-
-//         // accumulate
-//         weightsum += w;
-//         sum += sample_gi * w;
-//     }
-
-//     sum /= weightsum;
-
-//     return sum;
-// }
-
-float4 psvgf(sampler samp, float2 uv, float radius)
+float3 fireflyRejectionVariance(float3 radiance, float3 variance, float3 mean)
 {
-    float4 color_curr = tex2D(samp, uv);
-    float lum_curr = luminance(color_curr.rgb);
+    float3 stddev = sqrt(max(1e-5, variance));
+    float3 high_thres = 0.1 + mean + stddev * 1.0;
+    return min(radiance, high_thres);
+}
 
-    // variance estimation
-    float4 color[16];
-    float lum[16];
-    float2 sigma_var = (lum_curr, lum_curr * lum_curr);
-    [unroll]
-    for(int i = 0; i < 16; ++i)
-    {
-        float3 offset = g_Poisson16[i];
-        float2 uv_sample = uv + offset.xy * radius / YASSGI_GI_BUFFER_SIZE;
+float4 atrous(sampler samp, float2 uv, float radius)
+{
+    float4 gi_curr = tex2D(samp, uv);
 
-        color[i] = tex2D(samp, uv_sample);
-        lum[i] = luminance(color[i].rgb);
-        sigma_var += float2(lum[i], lum[i] * lum[i]);
-    }
-    sigma_var *= 0.11111111111;
-    float variance = max(0, sigma_var.y - sigma_var.x * sigma_var.x);
-
-    // poisson filtering
     float4 g_curr = tex2D(samp_g, uv);
     float2 zgrad = float2(ddx(g_curr.w), ddy(g_curr.w));
     
     float weightsum = 1;
-    float4 sum = color_curr;
+    float4 sum = gi_curr;
     [unroll]
     for(int i = 0; i < 16; ++i)
     {
@@ -753,6 +682,7 @@ float4 psvgf(sampler samp, float2 uv, float radius)
         float2 uv_sample = uv + offset.xy * radius / YASSGI_GI_BUFFER_SIZE;
 
         float4 g_sample = tex2D(samp_g, uv_sample);
+        float4 gi_sample = tex2D(samp, uv_sample);
 
         float w = pow(max(0, dot(g_curr.xyz, g_sample.xyz)), 64);  // normal
         w *= exp(-abs(g_curr.w - g_sample.w) / (1 * abs(dot(zgrad, offset.xy * radius)) + EPS));  // depth
@@ -760,7 +690,7 @@ float4 psvgf(sampler samp, float2 uv, float radius)
         w = saturate(w) * exp(-0.66 * offset.z * offset.z);  // gaussian kernel
         
         weightsum += w;
-        sum += color[i] * w;
+        sum += gi_sample * w;
     }
     return (sum / weightsum);
 }
@@ -860,7 +790,7 @@ void PS_GI(
         // determine source color
         float3 hit_color = tex2Dlod(samp_color, float4(ray.uv, ray.spread_level, 0)).rgb;
         hit_color += tex2Dlod(samp_gi_ao_accum_1, float4(ray.uv, ray.spread_level, 0)).rgb * fBounceMult;
-        hit_color = length(hit_color) > fLightSrcThres ? hit_color : 0;
+        hit_color = luminance(hit_color) > fLightSrcThres ? hit_color : 0;
         hit_color *= is_backface ? fBackfaceLightMult : 1;
 
         // brdf
@@ -945,7 +875,7 @@ void PS_GI(
         // determine source color
         float3 hit_color = tex2Dlod(samp_color, float4(uv_curr, spread_level, 0)).rgb;
         hit_color += tex2Dlod(samp_gi_ao_accum_1, float4(uv_curr, spread_level, 0)).rgb * fBounceMult;
-        hit_color = length(hit_color) > fLightSrcThres ? hit_color : 0;
+        hit_color = luminance(hit_color) > fLightSrcThres ? hit_color : 0;
         hit_color *= is_backface ? fBackfaceLightMult : 1;
 
         hit_color *= albedo;
@@ -983,8 +913,8 @@ void PS_Accumulation(
 
     float hist_len_prev = tex2D(samp_temporal_1, uv_prev).x;
 
-    float4 gi_accum = tex2D(samp_gi_ao_accum_1, uv_prev);
-    float4 gi_curr = tex2D(samp_gi_ao, uv);
+    float4 gi_ao_prev = tex2D(samp_gi_ao_accum_1, uv_prev);
+    float4 gi_ao_curr = tex2D(samp_gi_ao, uv);
     
     float4 g_curr = tex2D(samp_g, uv);
     float4 g_prev = tex2D(samp_g_prev, uv_prev);
@@ -999,11 +929,37 @@ void PS_Accumulation(
     bool occluded = delta > fDisocclThres * 0.01;
 
     float hist_len_new = min(hist_len_prev * (!occluded) + 1, iMaxAccumFrames);
-    float4 gi_new = occluded ? gi_curr : lerp(gi_accum, gi_curr, rcp(hist_len_new));
+    float4 gi_ao_new = occluded ? gi_ao_curr : lerp(gi_ao_prev, gi_ao_curr, rcp(hist_len_new));
 
     // finalize
-    gi_ao_accum = gi_new;
+    gi_ao_accum = gi_ao_new;
     temporal_info = hist_len_new;
+}
+
+void PS_Firefly(
+    in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
+    out float4 gi_ao : SV_Target0, out float temporal_info : SV_Target1
+)
+{
+    float4 gi_ao_curr = tex2D(samp_gi_ao_accum, uv);
+    float hist_len = tex2D(samp_temporal, uv).x;
+
+    float3 mean = gi_ao_curr.rgb;
+    float3 mean_2 = gi_ao_curr.rgb * gi_ao_curr.rgb;
+    for(int i = 0; i < 16; ++i)
+    {
+        float3 offset = g_Poisson16[i];
+        float2 uv_sample = uv + offset.xy * 3 / YASSGI_GI_BUFFER_SIZE;
+
+        float3 gi_sample = tex2D(samp_gi_ao_accum, uv_sample).rgb;
+        mean += gi_sample;
+        mean_2 += gi_sample * gi_sample;
+    }
+    mean /= 17;
+    mean_2 /= 17;
+    
+    gi_ao = float4(fireflyRejectionVariance(gi_ao_curr.rgb, mean_2 - mean * mean, mean), gi_ao_curr.a);
+    temporal_info = hist_len;
 }
 
 void PS_Blur1(
@@ -1011,7 +967,7 @@ void PS_Blur1(
     out float4 color : SV_Target0
 )
 {
-    color = psvgf(samp_gi_ao_accum, uv, 1);
+    color = atrous(samp_gi_ao_accum_1, uv, 1);
 }
 
 void PS_Blur2(
@@ -1019,16 +975,15 @@ void PS_Blur2(
     out float4 color : SV_Target0
 )
 {
-    color = psvgf(samp_gi_ao_blur1, uv, 2);
+    color = atrous(samp_gi_ao_blur1, uv, 2);
 }
 
 void PS_Blur3(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
-    out float4 color : SV_Target0, out float temporal_info : SV_Target1
+    out float4 color : SV_Target0
 )
 {
-    color = psvgf(samp_gi_ao_blur2, uv, 4);
-    temporal_info = tex2D(samp_temporal, uv).x;
+    color = atrous(samp_gi_ao_blur2, uv, 4);
 }
 
 void PS_Blur4(
@@ -1036,16 +991,15 @@ void PS_Blur4(
     out float4 color : SV_Target0
 )
 {
-    color = psvgf(samp_gi_ao_blur1, uv, 8);
+    color = atrous(samp_gi_ao_blur1, uv, 8);
 }
 
 void PS_Blur5(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
-    out float4 color : SV_Target0, out float temporal_info : SV_Target1
+    out float4 color : SV_Target0
 )
 {
-    color = psvgf(samp_gi_ao_blur2, uv, 16);
-    temporal_info = tex2D(samp_temporal, uv).x;
+    color = atrous(samp_gi_ao_blur2, uv, 16);
 }
 
 void PS_Display(
@@ -1080,25 +1034,29 @@ void PS_Display(
             color.a = 1;
         }
     }
-    else [branch]if(iViewMode == 2)  // GI
+    else [branch]if(iViewMode == 2)  // Fake Albedo
+    {
+        color.rgb = saturate(mul(g_colorOutputMat, fakeAlbedo(tex2D(samp_color, uv).rgb)));
+    }
+    else [branch]if(iViewMode == 3)  // GI
     {
         color = (iFrameCount / 300) % 2 ?
             rcp(1 + tex2D(samp_gi_ao, uv).w * fAoStrength) :
             mul(g_colorOutputMat, tex2D(samp_gi_ao, uv).xyz * fIlStrength);
     }
-    else [branch]if(iViewMode == 3)  // GI Accum
+    else [branch]if(iViewMode == 4)  // GI Accum
     {
         color = (iFrameCount / 300) % 2 ?
             rcp(1 + tex2D(samp_gi_ao_accum, uv).w * fAoStrength) :
             mul(g_colorOutputMat, tex2D(samp_gi_ao_accum, uv).xyz * fIlStrength);
     }
-    else [branch]if(iViewMode == 4)  // GI Blurred
+    else [branch]if(iViewMode == 5)  // GI Blurred
     {
         color = (iFrameCount / 300) % 2 ?
             rcp(1 + tex2D(samp_gi_ao_accum_1, uv).w * fAoStrength) :
             mul(g_colorOutputMat, tex2D(samp_gi_ao_accum_1, uv).xyz * fIlStrength);
     }
-    else [branch]if(iViewMode == 5)  // Accum speed
+    else [branch]if(iViewMode == 6)  // Accum speed
     {
         color = tex2D(samp_temporal_1, uv).x / iMaxAccumFrames;
     }
@@ -1129,6 +1087,12 @@ technique YASSGI{
     }
     pass {
         VertexShader = PostProcessVS;
+        PixelShader = PS_Firefly;
+        RenderTarget0 = tex_gi_ao_accum_1;
+        RenderTarget1 = tex_temporal_1;
+    }
+    pass {
+        VertexShader = PostProcessVS;
         PixelShader = PS_Blur1;
         RenderTarget0 = tex_gi_ao_blur1;
     }
@@ -1141,7 +1105,6 @@ technique YASSGI{
         VertexShader = PostProcessVS;
         PixelShader = PS_Blur3;
         RenderTarget0 = tex_gi_ao_accum_1;
-        RenderTarget1 = tex_temporal_1;
     }
     // pass {
     //     VertexShader = PostProcessVS;
@@ -1152,7 +1115,6 @@ technique YASSGI{
     //     VertexShader = PostProcessVS;
     //     PixelShader = PS_Blur5;
     //     RenderTarget0 = tex_gi_ao_accum_1;
-    //     RenderTarget1 = tex_temporal_1;
     // }
     pass {
         VertexShader = PostProcessVS;
