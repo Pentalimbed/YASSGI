@@ -170,7 +170,7 @@ uniform float fAlbedoSatPower <
         "hue is the result of lighting. Greater value yields more saturated output on colored surfaces.\n";
     ui_min = 0.0; ui_max = 10.0;
     ui_step = 0.01;
-> = 2.0;
+> = 1.0;
 
 uniform float fAlbedoNorm <
     ui_type = "slider";
@@ -911,10 +911,10 @@ void PS_Accumulation(
     float2 uv_prev = uv;
 #endif
 
-    float hist_len_prev = tex2D(samp_temporal_1, uv_prev).x;
+    float hist_len_prev = tex2Dfetch(samp_temporal_1, uv_prev * YASSGI_GI_BUFFER_SIZE).x;
 
-    float4 gi_ao_prev = tex2D(samp_gi_ao_accum_1, uv_prev);
-    float4 gi_ao_curr = tex2D(samp_gi_ao, uv);
+    float4 gi_ao_prev = tex2Dfetch(samp_gi_ao_accum_1, uv_prev * YASSGI_GI_BUFFER_SIZE);
+    float4 gi_ao_curr = tex2Dfetch(samp_gi_ao, uv * YASSGI_GI_BUFFER_SIZE);
     
     float4 g_curr = tex2D(samp_g, uv);
     float4 g_prev = tex2D(samp_g_prev, uv_prev);
@@ -1062,7 +1062,9 @@ void PS_Display(
     }
 }
 
-technique YASSGI{
+technique YASSGI <
+    ui_tooltip = "!: This shader is slower in performance mode."; >
+{
     pass {
         VertexShader = PostProcessVS;
         PixelShader = PS_SavePrev;
