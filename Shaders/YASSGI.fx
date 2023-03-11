@@ -120,7 +120,7 @@ uniform float fFrameTime   < source = "frametime";  >;
 uniform int iViewMode <
 	ui_type = "combo";
     ui_label = "View Mode";
-    ui_items = "YASSGI\0Depth / Normal\0GI / AO (Raw)\0GI / AO (Pre-Blur)\0GI / AO (Accumulated)\0Accumulated Frames\0";
+    ui_items = "YASSGI\0Depth / Normal\0GI / AO (Raw)\0GI / AO (Accumulated)\0GI / AO (Blurred)\0Accumulated Frames\0";
 > = 0;
 
 // <---- Input ---->
@@ -257,30 +257,14 @@ static const float fMatRoughness = 0.1;
 
 // <---- Spatial Blur ---->
 
-uniform float fPreBlurRadius <
-    ui_type = "slider";
-    ui_category = "Spatial Blur";
-    ui_label = "Pre-Blur Radius";
-    ui_min = 0.0; ui_max = 50.0;
-    ui_step = 1.0;
-> = 12.0;
-
-uniform float fBlurRadius <
-    ui_type = "slider";
-    ui_category = "Spatial Blur";
-    ui_label = "Blur Radius";
-    ui_min = 0.0; ui_max = 50.0;
-    ui_step = 1.0;
-> = 12.0;
-
-uniform float fGeometrySensitivity <
-    ui_type = "slider";
-    ui_category = "Spatial Blur";
-    ui_label = "Geometry Sensitivity";
-    ui_tooltip = "Maximum allowed deviation from local tangent plane.";
-    ui_min = 0.01; ui_max = 1.0;
-    ui_step = 0.01;
-> = 0.5;
+// uniform float fVarianceWeight <
+//     ui_type = "slider";
+//     ui_category = "Spatial Blur";
+//     ui_label = "Variance Weight";
+//     ui_tooltip = "Greater value for heavier blur in noisy areas.";
+//     ui_min = 0.0; ui_max = 100.0;
+//     ui_step = 1.0;
+// > = 4.0;
 
 // <---- Temporal Accumulation ---->
 
@@ -364,7 +348,7 @@ sampler samp_blue_noise                               { Texture = tex_blue_noise
 texture tex_color  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = YASSGI_MIP_LEVEL;};
 sampler samp_color {Texture = tex_color;};
 
-// normal & z
+// normal (RGB) & z (A)
 texture tex_g  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = YASSGI_MIP_LEVEL;};
 sampler samp_g {Texture = tex_g;};
 
@@ -372,26 +356,23 @@ sampler samp_g {Texture = tex_g;};
 texture tex_g_prev  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F;};
 sampler samp_g_prev {Texture = tex_g_prev;};
 
-// gi & ao
+// gi (RGB) & ao (A)
 texture tex_gi_ao  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = RGBA16F;};
 sampler samp_gi_ao {Texture = tex_gi_ao;};
 
-// gi & ao pre-blur
-texture tex_gi_ao_preblur  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = RGBA16F;};
-sampler samp_gi_ao_preblur {Texture = tex_gi_ao_preblur;};
-
 // gi & ao, accumulated
-texture tex_gi_ao_accum  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = RGBA16F; MipLevels = YASSGI_MIP_LEVEL;};
+texture tex_gi_ao_accum  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = RGBA16F;};
 sampler samp_gi_ao_accum {Texture = tex_gi_ao_accum;};
 
-texture tex_accum_speed  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = R16F;};
-sampler samp_accum_speed {Texture = tex_accum_speed;};
+// hist len (R)
+texture tex_temporal  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = R16F;};
+sampler samp_temporal {Texture = tex_temporal;};
 
-texture tex_gi_ao_accum_1  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = RGBA16F;};
+texture tex_gi_ao_accum_1  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = RGBA16F; MipLevels = YASSGI_MIP_LEVEL;};
 sampler samp_gi_ao_accum_1 {Texture = tex_gi_ao_accum_1;};
 
-texture tex_accum_speed_1  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = R16F; MipLevels = 2;};
-sampler samp_accum_speed_1 {Texture = tex_accum_speed_1;};
+texture tex_temporal_1  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = R16F;};
+sampler samp_temporal_1 {Texture = tex_temporal_1;};
 
 // gi & ao blur
 texture tex_gi_ao_blur1  {Width = YASSGI_GI_BUFFER_WIDTH; Height = YASSGI_GI_BUFFER_HEIGHT; Format = RGBA16F;};
@@ -526,6 +507,11 @@ float3 fakeAlbedo(float3 color)
     return albedo;
 }
 
+float luminance(float3 color)
+{
+    return dot(color, float3(0.21267291505, 0.71515223009, 0.07217499918));
+}
+
 // <---- Random & Sampling ---->
 
 // src http://extremelearning.com.au/unreasonable-effectiveness-of-quasirandom-sequences/
@@ -611,7 +597,9 @@ void simpleRayMarch(inout RayInfo ray)
     {
         ray.spread_level = step * ray.spread_exp;
 
-        float len_mult = exp2(ray.spread_level);
+        // make sure marched one pixel at least
+        float2 min_len = ReShade::PixelSize * ray.pos.z / (ray.stride.xy);
+        float len_mult = max(min(min_len.x, min_len.y), exp2(ray.spread_level));
         ray.pos += ray.stride * len_mult;
         ray.uv = viewSpaceToUv(ray.pos);
         
@@ -671,63 +659,110 @@ float getSpecularLobeHalfAngle(float roughness, float precent_volume)
 
 // <---- Blur ---->
 
-float getFadeBasedOnAccumulatedFrames( float accum_speed )
+// float getFadeBasedOnAccumulatedFrames( float hist_len )
+// {
+//     float history_fix_frame_num = 3;
+//     float a = history_fix_frame_num * 2.0 * 0.3333 + 1e-6;
+//     float b = history_fix_frame_num * 4.0 * 0.3333 + 2e-6;
+
+//     return saturate((hist_len - a) / (b - a));
+// }
+
+// float4 spatialBlur(sampler gi_ao_sampler, float2 uv, float radius, float hist_len)
+// {
+//     float4 gi_ao = tex2D(gi_ao_sampler, uv);
+
+//     float4 g = tex2D(samp_g, uv);
+//     float3 view_pos = uvToViewSpace(uv, g.w);
+//     float frustum_size = getFrustumSize(g.w);
+
+//     // normal dir skew
+//     float3x3 kernel_basis = getBasis(normalize(lerp(g.xyz, float3(0,0,-1), 0.25)));
+//     float view_radius = radius * frustum_size * BUFFER_RCP_HEIGHT;
+//     float3 tangent = kernel_basis[0] * view_radius;
+//     float3 bitangent = kernel_basis[1] * view_radius;
+
+//     float init_weight = 0.001;
+//     float weightsum = init_weight;
+//     float4 sum = gi_ao * init_weight;
+//     [unroll]
+//     for(uint n = 0; n < 8; ++n)
+//     {
+//         float3 offset = g_Poisson8[n];
+
+//         float2 rotated_offset = mul(getRotateMatrix(iFrameCount * 2), offset.xy);
+//         float3 view_offset = tangent * rotated_offset.x + bitangent * rotated_offset.y;
+//         float3 sample_pos = view_pos + view_offset;
+//         float3 sample_viewdir = normalize(sample_pos);
+//         float2 sample_uv = viewSpaceToUv(sample_pos);
+
+//         float4 sample_gi = tex2D(gi_ao_sampler, sample_uv);
+//         float4 sample_g = tex2D(samp_g, sample_uv);
+
+//         // weighting
+//         // float w = exp(-0.66 * offset.z * offset.z);  // Base gaussian weight
+//         float w = saturate(dot(sample_g.xyz, g.xyz) * 0.5 + 0.5);
+//         w *= exp2(-abs(dot(sample_viewdir, g.xyz) - dot(sample_viewdir, sample_g.xyz)) / g.w * 1000000 * fGeometrySensitivity);
+//         w = hist_len < iMaxAccumFrames * 0.2 ? 1 : w;
+
+//         // screen check
+//         w = isInScreen(sample_uv) ? w : 0.0;
+
+//         // accumulate
+//         weightsum += w;
+//         sum += sample_gi * w;
+//     }
+
+//     sum /= weightsum;
+
+//     return sum;
+// }
+
+float4 psvgf(sampler samp, float2 uv, float radius)
 {
-    float history_fix_frame_num = 3;
-    float a = history_fix_frame_num * 2.0 * 0.3333 + 1e-6;
-    float b = history_fix_frame_num * 4.0 * 0.3333 + 2e-6;
+    float4 color_curr = tex2D(samp, uv);
+    float lum_curr = luminance(color_curr.rgb);
 
-    return saturate((accum_speed - a) / (b - a));
-}
-
-float4 spatialBlur(sampler gi_ao_sampler, float2 uv, float radius, float accum_speed)
-{
-    float4 gi_ao = tex2D(gi_ao_sampler, uv);
-
-    float4 g = tex2D(samp_g, uv);
-    float3 view_pos = uvToViewSpace(uv, g.w);
-    float frustum_size = getFrustumSize(g.w);
-
-    // normal dir skew
-    float3x3 kernel_basis = getBasis(normalize(lerp(g.xyz, float3(0,0,-1), 0.25)));
-    float view_radius = radius * frustum_size * BUFFER_RCP_HEIGHT;
-    float3 tangent = kernel_basis[0] * view_radius;
-    float3 bitangent = kernel_basis[1] * view_radius;
-
-    float init_weight = 0.001;
-    float weightsum = init_weight;
-    float4 sum = gi_ao * init_weight;
+    // variance estimation
+    float4 color[16];
+    float lum[16];
+    float2 sigma_var = (lum_curr, lum_curr * lum_curr);
     [unroll]
-    for(uint n = 0; n < 8; ++n)
+    for(int i = 0; i < 16; ++i)
     {
-        float3 offset = g_Poisson8[n];
+        float3 offset = g_Poisson16[i];
+        float2 uv_sample = uv + offset.xy * radius / YASSGI_GI_BUFFER_SIZE;
 
-        float2 rotated_offset = mul(getRotateMatrix(iFrameCount * 2), offset.xy);
-        float3 view_offset = tangent * rotated_offset.x + bitangent * rotated_offset.y;
-        float3 sample_pos = view_pos + view_offset;
-        float3 sample_viewdir = normalize(sample_pos);
-        float2 sample_uv = viewSpaceToUv(sample_pos);
-
-        float4 sample_gi = tex2D(gi_ao_sampler, sample_uv);
-        float4 sample_g = tex2D(samp_g, sample_uv);
-
-        // weighting
-        // float w = exp(-0.66 * offset.z * offset.z);  // Base gaussian weight
-        float w = saturate(dot(sample_g.xyz, g.xyz) * 0.5 + 0.5);
-        w *= exp2(-abs(dot(sample_viewdir, g.xyz) - dot(sample_viewdir, sample_g.xyz)) / g.w * 1000000 * fGeometrySensitivity);
-        w = accum_speed < iMaxAccumFrames * 0.2 ? 1 : w;
-
-        // screen check
-        w = isInScreen(sample_uv) ? w : 0.0;
-
-        // accumulate
-        weightsum += w;
-        sum += sample_gi * w;
+        color[i] = tex2D(samp, uv_sample);
+        lum[i] = luminance(color[i].rgb);
+        sigma_var += float2(lum[i], lum[i] * lum[i]);
     }
+    sigma_var *= 0.11111111111;
+    float variance = max(0, sigma_var.y - sigma_var.x * sigma_var.x);
 
-    sum /= weightsum;
+    // poisson filtering
+    float4 g_curr = tex2D(samp_g, uv);
+    float2 zgrad = float2(ddx(g_curr.w), ddy(g_curr.w));
+    
+    float weightsum = 1;
+    float4 sum = color_curr;
+    [unroll]
+    for(int i = 0; i < 16; ++i)
+    {
+        float3 offset = g_Poisson16[i];
+        float2 uv_sample = uv + offset.xy * radius / YASSGI_GI_BUFFER_SIZE;
 
-    return sum;
+        float4 g_sample = tex2D(samp_g, uv_sample);
+
+        float w = pow(max(0, dot(g_curr.xyz, g_sample.xyz)), 64);  // normal
+        w *= exp(-abs(g_curr.w - g_sample.w) / (1 * abs(dot(zgrad, offset.xy * radius)) + EPS));  // depth
+        // w *= exp(-abs(lum_curr - lum[i]) / (fVarianceWeight * variance + EPS));  // luminance
+        w = saturate(w) * exp(-0.66 * offset.z * offset.z);  // gaussian kernel
+        
+        weightsum += w;
+        sum += color[i] * w;
+    }
+    return (sum / weightsum);
 }
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -929,49 +964,88 @@ void PS_GI(
 
 void PS_Accumulation(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
-    out float4 gi_ao_accum : SV_Target0, out float accum_speed : SV_Target1
+    out float4 gi_ao_accum : SV_Target0, out float temporal_info : SV_Target1
 )
 {
 #if YASSGI_USE_MOTION
     float2 uv_prev = uv + tex2D(sMotionVectorTex, uv).xy;
+
+    [branch]
+    if(!isInScreen(uv_prev))
+    {
+        gi_ao_accum = tex2D(samp_gi_ao, uv);
+        temporal_info = 1;
+        return;
+    }
 #else
     float2 uv_prev = uv;
 #endif
 
+    float hist_len_prev = tex2D(samp_temporal_1, uv_prev).x;
+
     float4 gi_accum = tex2D(samp_gi_ao_accum_1, uv_prev);
-    float accum_speed_prev = tex2Dlod(samp_accum_speed_1, float4(uv_prev, 1, 0)).x;
     float4 gi_curr = tex2D(samp_gi_ao, uv);
     
     float4 g_curr = tex2D(samp_g, uv);
     float4 g_prev = tex2D(samp_g_prev, uv_prev);
 
-    float3 color_curr = tex2D(samp_color, uv).rgb;
-    float3 color_prev = tex2D(samp_color, uv_prev).rgb;
+    // float3 color_curr = tex2D(samp_color, uv).rgb;
+    // float3 color_prev = tex2D(samp_color, uv_prev).rgb;
 
     // z & normal disocclusion
     float z_delta = abs(g_curr.w - g_prev.w) / g_curr.w / max(fFrameTime, 1.0);
     float delta = z_delta * abs(dot(g_curr.xyz, normalize(uvToViewSpace(uv, g_curr.w))));  // Geometry
-    delta += length(fakeAlbedo(color_prev) - fakeAlbedo(color_curr)) * 0.05;
-    float quality = delta > fDisocclThres * 0.01 ? 0 : 1;
+    // delta += length(fakeAlbedo(color_prev) - fakeAlbedo(color_curr)) * 0.05;
+    bool occluded = delta > fDisocclThres * 0.01;
 
-    float accum_speed_new = min(accum_speed_prev * quality + 1, iMaxAccumFrames) ;
-    float4 gi_new = lerp(gi_accum, gi_curr, rcp(accum_speed_new));
+    float hist_len_new = min(hist_len_prev * (!occluded) + 1, iMaxAccumFrames);
+    float4 gi_new = occluded ? gi_curr : lerp(gi_accum, gi_curr, rcp(hist_len_new));
 
     // finalize
     gi_ao_accum = gi_new;
-    accum_speed = accum_speed_new;
+    temporal_info = hist_len_new;
 }
 
-// Currently only copying...
-void PS_HistoryFix(
+void PS_Blur1(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
-    out float4 gi_ao_hist_fix : SV_Target0, out float accum_speed : SV_Target1
+    out float4 color : SV_Target0
 )
 {
-    gi_ao_hist_fix = tex2Dfetch(samp_gi_ao_accum, int2(uv * YASSGI_GI_BUFFER_SIZE));
-    accum_speed = tex2Dfetch(samp_accum_speed, int2(uv * YASSGI_GI_BUFFER_SIZE)).x;
+    color = psvgf(samp_gi_ao_accum, uv, 1);
+}
 
-    
+void PS_Blur2(
+    in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
+    out float4 color : SV_Target0
+)
+{
+    color = psvgf(samp_gi_ao_blur1, uv, 2);
+}
+
+void PS_Blur3(
+    in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
+    out float4 color : SV_Target0, out float temporal_info : SV_Target1
+)
+{
+    color = psvgf(samp_gi_ao_blur2, uv, 4);
+    temporal_info = tex2D(samp_temporal, uv).x;
+}
+
+void PS_Blur4(
+    in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
+    out float4 color : SV_Target0
+)
+{
+    color = psvgf(samp_gi_ao_blur1, uv, 8);
+}
+
+void PS_Blur5(
+    in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
+    out float4 color : SV_Target0, out float temporal_info : SV_Target1
+)
+{
+    color = psvgf(samp_gi_ao_blur2, uv, 16);
+    temporal_info = tex2D(samp_temporal, uv).x;
 }
 
 void PS_Display(
@@ -982,7 +1056,7 @@ void PS_Display(
     [branch]
     if(iViewMode == 0)  // None
     {
-        float4 gi_ao = tex2D(samp_gi_ao_accum, uv);
+        float4 gi_ao = tex2D(samp_gi_ao_accum_1, uv);
         float4 albedo = tex2D(samp_color, uv);
         color.rgb = albedo.rgb;
         color.rgb += gi_ao.rgb * fIlStrength;
@@ -1012,21 +1086,21 @@ void PS_Display(
             rcp(1 + tex2D(samp_gi_ao, uv).w * fAoStrength) :
             mul(g_colorOutputMat, tex2D(samp_gi_ao, uv).xyz * fIlStrength);
     }
-    else [branch]if(iViewMode == 3)  // GI Preblur
-    {
-        color = (iFrameCount / 300) % 2 ?
-            rcp(1 + tex2D(samp_gi_ao_preblur, uv).w * fAoStrength) :
-            mul(g_colorOutputMat, tex2D(samp_gi_ao_preblur, uv).xyz * fIlStrength);
-    }
-    else [branch]if(iViewMode == 4)  // GI Accum
+    else [branch]if(iViewMode == 3)  // GI Accum
     {
         color = (iFrameCount / 300) % 2 ?
             rcp(1 + tex2D(samp_gi_ao_accum, uv).w * fAoStrength) :
             mul(g_colorOutputMat, tex2D(samp_gi_ao_accum, uv).xyz * fIlStrength);
     }
+    else [branch]if(iViewMode == 4)  // GI Blurred
+    {
+        color = (iFrameCount / 300) % 2 ?
+            rcp(1 + tex2D(samp_gi_ao_accum_1, uv).w * fAoStrength) :
+            mul(g_colorOutputMat, tex2D(samp_gi_ao_accum_1, uv).xyz * fIlStrength);
+    }
     else [branch]if(iViewMode == 5)  // Accum speed
     {
-        color = tex2D(samp_accum_speed, uv).x / iMaxAccumFrames;
+        color = tex2D(samp_temporal_1, uv).x / iMaxAccumFrames;
     }
 }
 
@@ -1051,14 +1125,35 @@ technique YASSGI{
         VertexShader = PostProcessVS;
         PixelShader = PS_Accumulation;
         RenderTarget0 = tex_gi_ao_accum;
-        RenderTarget1 = tex_accum_speed;
+        RenderTarget1 = tex_temporal;
     }
     pass {
         VertexShader = PostProcessVS;
-        PixelShader = PS_HistoryFix;
-        RenderTarget0 = tex_gi_ao_accum_1;
-        RenderTarget1 = tex_accum_speed_1;
+        PixelShader = PS_Blur1;
+        RenderTarget0 = tex_gi_ao_blur1;
     }
+    pass {
+        VertexShader = PostProcessVS;
+        PixelShader = PS_Blur2;
+        RenderTarget0 = tex_gi_ao_blur2;
+    }
+    pass {
+        VertexShader = PostProcessVS;
+        PixelShader = PS_Blur3;
+        RenderTarget0 = tex_gi_ao_accum_1;
+        RenderTarget1 = tex_temporal_1;
+    }
+    // pass {
+    //     VertexShader = PostProcessVS;
+    //     PixelShader = PS_Blur4;
+    //     RenderTarget0 = tex_gi_ao_blur2;
+    // }
+    // pass {
+    //     VertexShader = PostProcessVS;
+    //     PixelShader = PS_Blur5;
+    //     RenderTarget0 = tex_gi_ao_accum_1;
+    //     RenderTarget1 = tex_temporal_1;
+    // }
     pass {
         VertexShader = PostProcessVS;
         PixelShader = PS_Display;
