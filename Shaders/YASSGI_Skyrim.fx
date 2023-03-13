@@ -56,10 +56,6 @@ namespace YASSGI
 #define YASSGI_BITMASK_SIZE 16
 #define YASSGI_SECTOR_ANGLE (PI / YASSGI_BITMASK_SIZE)
 
-#ifndef YASSGI_USE_MOTION
-#   define YASSGI_USE_MOTION 0
-#endif
-
 // color space conversion matrices
 // src: https://www.colour-science.org/apps/  using CAT02
 static const float3x3 g_sRGBToACEScg = float3x3(
@@ -114,7 +110,9 @@ static const float3 g_Poisson16[16] =
 // Uniform Varibales
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-uniform uint  iFrameCount  < source = "framecount"; >;
+uniform float fFarPlane < source = "Far"; >;
+
+uniform float fTimer  < source = "TimerReal"; >;
 uniform float fFrameTime   < source = "frametime";  >;
 
 uniform int iViewMode <
@@ -122,6 +120,8 @@ uniform int iViewMode <
     ui_label = "View Mode";
     ui_items = "YASSGI\0Depth / Normal\0Fake Albedo\0GI / AO (Raw)\0GI / AO (Accumulated)\0GI / AO (Blurred)\0Accumulated Frames\0";
 > = 0;
+
+uniform bool bUseSkyrimNormal = false;
 
 // <---- Input ---->
 
@@ -332,11 +332,17 @@ uniform float fBounceMult <
 
 }
 
-#if YASSGI_USE_MOTION
-// motion vectors via other fx
-texture texMotionVectors          { Width = BUFFER_WIDTH;   Height = BUFFER_HEIGHT;   Format = RG16F; };
-sampler sMotionVectorTex         { Texture = texMotionVectors;  };
-#endif
+namespace Skyrim
+{
+texture tex_motion_vector : MOTION_VECTOR;
+sampler samp_motion_vector { Texture = tex_motion_vector; };
+
+texture tex_cubemap : REFLECTIONS;
+sampler samp_cubemap { Texture = tex_cubemap; };
+
+texture tex_normal : NORMAL_TAAMASK_SSRMASK;
+sampler samp_normal { Texture = tex_normal; };
+}
 
 namespace YASSGI
 {
@@ -416,6 +422,12 @@ float getCoordAngle(float3 x, float3 y, float3 ivec)
     return atan2(dot(y, ivec), dot(x, ivec));
 }
 
+float fmod(float a, float b)
+{
+	float c = frac(abs(a / b)) * abs(b);
+	return a < 0 ? -c : c;
+}
+
 // <---- Input ---->
 
 float zToLinearDepth(float z) {return (z - 1) * rcp(RESHADE_DEPTH_LINEARIZATION_FAR_PLANE);}
@@ -437,6 +449,18 @@ float2 viewSpaceToUv(float3 pos){
     const float3 uvtoprojMUL = float3(-2.0 * uvtoprojADD.xy, 0.0);
     const float4 projtouv = float4(rcp(uvtoprojMUL.xy), -rcp(uvtoprojMUL.xy) * uvtoprojADD.xy);
     return (pos.xy / pos.z) * projtouv.xy + projtouv.zw;
+}
+
+float3 getDecodedNormal(float2 texcoord)
+{
+	float3 enc = tex2D(Skyrim::samp_normal, texcoord).xyz;
+	float2 fenc = enc*4-2;
+    float f = dot(fenc,fenc);
+    float g = sqrt(1-f/4);
+    float3 n;
+    n.xy = fenc*g;
+    n.z = 1-f/2;
+    return n;
 }
 
 // src: https://gist.github.com/bgolus/a07ed65602c009d5e2f753826e8078a0
@@ -676,13 +700,13 @@ void PS_InputSetup(
 
     // g
     float z = getZ(uv);
-    float3 normal = getViewNormalAccurate(uv);
+    float3 normal = bUseSkyrimNormal ? getDecodedNormal(uv) * float3(1, -1, -1) : getViewNormalAccurate(uv);
 
-    if(isWeapon(z))
-    {
-        z = ((z - 1) * fWeapDepthMult) + 1;
-        normal = normalize(normal * float3(1, 1, rcp(fWeapDepthMult)));
-    }
+    // if(isWeapon(z))
+    // {
+    //     z = ((z - 1) * fWeapDepthMult) + 1;
+    //     normal = normalize(normal * float3(1, 1, rcp(fWeapDepthMult)));
+    // }
 
     g = float4(normal, z);
 }
@@ -718,7 +742,7 @@ void PS_GI(
     {
         // float3 rand3 = tex2Dfetch(samp_blue_noise,
         //     int2((uv * YASSGI_GI_BUFFER_SIZE + r2(iFrameCount + i) * YASSGI_NOISE_SIZE) % YASSGI_NOISE_SIZE)).xyz;
-        float3 rand3 = rand4dTo3d(float4(uv, iFrameCount * RCP_PI, i * RCP_PI));
+        float3 rand3 = rand4dTo3d(float4(uv, fTimer, i * RCP_PI));
 
         float pdf;
 
@@ -763,7 +787,7 @@ void PS_GI(
 
 #else
 
-    float3 rand3 = rand4dTo3d(float4(uv, iFrameCount * RCP_PI, 0));
+    float3 rand3 = rand4dTo3d(float4(uv, fTimer, 0));
     float2 dir = float2(1, 0);
     sincos(rand3.x * 2 * PI, dir.y, dir.x);
     float2 stride = dir.xy * fBaseStride * 10.0 * ReShade::PixelSize / YASSGI_RENDER_SCALE * (1 + (rand3.y - 1) * fStrideJitter);
@@ -857,8 +881,7 @@ void PS_Accumulation(
     out float4 gi_ao_accum : SV_Target0, out float temporal_info : SV_Target1
 )
 {
-#if YASSGI_USE_MOTION
-    float2 uv_prev = uv + tex2D(sMotionVectorTex, uv).xy;
+    float2 uv_prev = uv + tex2D(Skyrim::samp_motion_vector, uv).xy;
 
     [branch]
     if(!isInScreen(uv_prev))
@@ -867,9 +890,6 @@ void PS_Accumulation(
         temporal_info = 1;
         return;
     }
-#else
-    float2 uv_prev = uv;
-#endif
 
     float hist_len_prev = tex2Dfetch(samp_temporal_1, uv_prev * YASSGI_GI_BUFFER_SIZE).x;
 
@@ -975,12 +995,12 @@ void PS_Display(
         color.rgb = albedo.rgb;
         color.rgb += gi_ao.rgb * fIlStrength;
         color.rgb /= 1 + gi_ao.w * fAoStrength;
-        color.rgb = saturate(mul(g_colorOutputMat, color.rgb));
+        color.rgb = mul(g_colorOutputMat, color.rgb);
     }
     else if(iViewMode == 1)  // Depth / Normal
     {
         float4 g = tex2D(samp_g, uv);
-        if((iFrameCount / 300) % 2)  // Normal
+        if(fmod(fTimer, 8) > 4)  // Normal
         {
             color = g.xyz * 0.5 * float3(1, 1, -1) + 0.5;  // for convention
         }
@@ -995,23 +1015,23 @@ void PS_Display(
     }
     else if(iViewMode == 2)  // Fake Albedo
     {
-        color.rgb = saturate(mul(g_colorOutputMat, fakeAlbedo(tex2D(samp_color, uv).rgb)));
+        color.rgb = mul(g_colorOutputMat, fakeAlbedo(tex2D(samp_color, uv).rgb));
     }
     else if(iViewMode == 3)  // GI
     {
-        color = (iFrameCount / 300) % 2 ?
+        color = fmod(fTimer, 8) > 4 ?
             rcp(1 + tex2D(samp_gi_ao, uv).w * fAoStrength) :
             mul(g_colorOutputMat, tex2D(samp_gi_ao, uv).xyz * fIlStrength);
     }
     else if(iViewMode == 4)  // GI Accum
     {
-        color = (iFrameCount / 300) % 2 ?
+        color = fmod(fTimer, 8) > 4 ?
             rcp(1 + tex2D(samp_gi_ao_accum, uv).w * fAoStrength) :
             mul(g_colorOutputMat, tex2D(samp_gi_ao_accum, uv).xyz * fIlStrength);
     }
     else if(iViewMode == 5)  // GI Blurred
     {
-        color = (iFrameCount / 300) % 2 ?
+        color = fmod(fTimer, 8) > 4 ?
             rcp(1 + tex2D(samp_gi_ao_accum_1, uv).w * fAoStrength) :
             mul(g_colorOutputMat, tex2D(samp_gi_ao_accum_1, uv).xyz * fIlStrength);
     }
@@ -1021,7 +1041,7 @@ void PS_Display(
     }
 }
 
-technique YASSGI <
+technique YASSGI_SKYRIM <
     ui_tooltip = "!: This shader is slower in performance mode."; >
 {
     pass {
@@ -1060,18 +1080,18 @@ technique YASSGI <
     pass {
         VertexShader = PostProcessVS;
         PixelShader = PS_Blur2;
-        RenderTarget0 = tex_gi_ao_blur2;
-    }
-    pass {
-        VertexShader = PostProcessVS;
-        PixelShader = PS_Blur3;
-        RenderTarget0 = tex_gi_ao_blur1;
-    }
-    pass {
-        VertexShader = PostProcessVS;
-        PixelShader = PS_Blur4;
         RenderTarget0 = tex_gi_ao_accum_1;
     }
+    // pass {
+    //     VertexShader = PostProcessVS;
+    //     PixelShader = PS_Blur3;
+    //     RenderTarget0 = tex_gi_ao_blur1;
+    // }
+    // pass {
+    //     VertexShader = PostProcessVS;
+    //     PixelShader = PS_Blur4;
+    //     RenderTarget0 = tex_gi_ao_accum_1;
+    // }
     // pass {
     //     VertexShader = PostProcessVS;
     //     PixelShader = PS_Blur5;
