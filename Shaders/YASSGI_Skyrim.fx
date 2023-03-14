@@ -15,7 +15,7 @@
     x use that blue noise somehow
     o bitmask il
     - motion vector distortion issue
-    - ghosting...
+    - noise around edges
 */
 
 #include "ReShade.fxh"
