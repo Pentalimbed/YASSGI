@@ -1090,13 +1090,13 @@ technique YASSGI_SKYRIM <
     pass {
         VertexShader = PostProcessVS;
         PixelShader = PS_Blur2;
+        RenderTarget0 = tex_gi_ao_blur2;
+    }
+    pass {
+        VertexShader = PostProcessVS;
+        PixelShader = PS_Blur3;
         RenderTarget0 = tex_gi_ao_accum_1;
     }
-    // pass {
-    //     VertexShader = PostProcessVS;
-    //     PixelShader = PS_Blur3;
-    //     RenderTarget0 = tex_gi_ao_blur1;
-    // }
     // pass {
     //     VertexShader = PostProcessVS;
     //     PixelShader = PS_Blur4;
