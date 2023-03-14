@@ -218,7 +218,7 @@ uniform float fBaseStride <
     ui_label = "Base Stride";
     ui_min = 0.01; ui_max = 10.0;
     ui_step = 0.01;
-> = 8.0;
+> = 5.0;
 
 uniform float fDepthScaledStride <
     ui_type = "slider";
@@ -226,7 +226,7 @@ uniform float fDepthScaledStride <
     ui_label = "Depth Scaled Stride";
     ui_min = 0.00; ui_max = 1.0;
     ui_step = 0.01;
-> = 1.0;
+> = 0.95;
 
 uniform float fSpreadExp <
     ui_type = "slider";
@@ -250,7 +250,7 @@ uniform float fZThickness <
     ui_label = "Z Thickness";
     ui_min = 0.0; ui_max = 10.0;
     ui_step = 0.1;
-> = 2.5;
+> = 1.2;
 
 // <---- Shading ---->
 
