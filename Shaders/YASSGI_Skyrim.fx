@@ -145,16 +145,16 @@ uniform float2 fDepthRange <
     ui_step = 0.001;
 > = float2(0.001, 0.999);
 
-uniform float fWeapDepthMult <
-    ui_type = "slider";
-    ui_category = "Input";
-    ui_label = "Weapon Depth Multiplier";
-    ui_tooltip = "Many FPS games squash their weapon into a super flat pancake.\n"
-        "You can check it in the depth/normal debug view. Red parts are the weapons.\n"
-        "Crank this up to free them from oppression and bring them back to illumination.";
-    ui_min = 1.0; ui_max = 100.0;
-    ui_step = 0.1;
-> = 1.0;
+// uniform float fWeapDepthMult <
+//     ui_type = "slider";
+//     ui_category = "Input";
+//     ui_label = "Weapon Depth Multiplier";
+//     ui_tooltip = "Many FPS games squash their weapon into a super flat pancake.\n"
+//         "You can check it in the depth/normal debug view. Red parts are the weapons.\n"
+//         "Crank this up to free them from oppression and bring them back to illumination.";
+//     ui_min = 1.0; ui_max = 100.0;
+//     ui_step = 0.1;
+// > = 1.0;
 
 uniform float fLightSrcThres <
 	ui_type = "slider";
@@ -433,10 +433,13 @@ float fmod(float a, float b)
 
 // <---- Input ---->
 
-float zToLinearDepth(float z) {return (z - 1) * rcp(RESHADE_DEPTH_LINEARIZATION_FAR_PLANE);}
-float linearDepthToZ(float depth) {return depth * RESHADE_DEPTH_LINEARIZATION_FAR_PLANE + 1;}
+float zToLinearDepth(float z) {return (z - fNearPlane) * rcp(fFarPlane);}
+float linearDepthToZ(float depth) {return depth * fFarPlane + fNearPlane;}
 
-float getLinearDepth(float2 uv) {return ReShade::GetLinearizedDepth(uv);}
+float getLinearDepth(float2 uv) {
+    float raw_z = tex2Dlod(Skyrim::samp_depth, float4(uv, 0, 0)).x;
+    return raw_z / (fFarPlane - raw_z * (fFarPlane - fNearPlane));
+}
 float getZ(float2 uv) {return linearDepthToZ(getLinearDepth(uv));}
 
 // src: qUINT
@@ -511,10 +514,10 @@ float3 getViewNormalAccurate(float2 uv)
     return normalize(cross(v_deriv, h_deriv));
 }
 
-bool isNear(float z){return z < 1;}
-bool isFar(float z){return z > RESHADE_DEPTH_LINEARIZATION_FAR_PLANE + 1;}
-bool isWeapon(float z){return z < linearDepthToZ(fDepthRange.x);}
-bool isSky(float z){return z > linearDepthToZ(fDepthRange.y);}
+bool isNear(float z){return z < fNearPlane;}
+bool isFar(float z){return z > fFarPlane + fNearPlane;}
+bool isWeapon(float z){return z < linearDepthToZ(fDepthRange.x * 0.01);}
+bool isSky(float z){return z > linearDepthToZ(fDepthRange.y * 0.01);}
 
 // techniquely not depth but I just wanna put it here
 bool isInScreen(float2 uv)
@@ -631,7 +634,7 @@ void simpleRayMarch(inout RayInfo ray)
         ray.uv = viewSpaceToUv(ray.pos);
         
         [branch]
-        if(!isInScreen(ray.uv) || isNear(ray.pos.z) || isSky(ray.pos.z))
+        if(!isInScreen(ray.uv) || isWeapon(ray.pos.z) || isSky(ray.pos.z))
             break;
 
         float4 g_curr = tex2Dlod(samp_g, float4(ray.uv, ray.spread_level, 0));
@@ -725,7 +728,7 @@ void PS_GI(
     float4 g = tex2D(samp_g, uv);
     
     [branch]
-    if(isNear(g.w) || isSky(g.w))  // leave sky alone
+    if(isWeapon(g.w) || isSky(g.w))  // leave sky alone
         return;
 
     float3 pos_orig = uvToViewSpace(uv, g.w);
@@ -753,7 +756,7 @@ void PS_GI(
         ray.orig = pos_orig;
         float3 raydir = sampleHemisphereCosWeighted(rand3.xy, normal_orig, pdf);
         ray.stride = raydir * fBaseStride * (1 + (rand3.z - 1) * fStrideJitter);
-        ray.stride *= lerp(1, max(EPS, zToLinearDepth(pos_orig.z)), fDepthScaledStride);
+        ray.stride *= lerp(1, max(EPS, zToLinearDepth(pos_orig.z) / fDepthRange.y * 100), fDepthScaledStride);
         ray.spread_exp = fSpreadExp;
         
         simpleRayMarch(ray);
@@ -828,7 +831,7 @@ void PS_GI(
         float2 angles = float2(getCoordAngle(tangent, normal_proj, pos_front - pos_orig),
                                getCoordAngle(tangent, normal_proj, pos_back - pos_orig));
         [branch]
-        if(angles.x < EPS || isNear(pos_front.z) || isSky(pos_front.z))
+        if(angles.x < EPS || isWeapon(pos_front.z) || isSky(pos_front.z))
         {
             gi_ao.rgb += (angles.x > EPS) && isSky(pos_front.z) ?
                 tex2Dlod(samp_color, float4(uv_curr, spread_level, 0)).rgb * albedo * PI * fSkylightMult :
@@ -1010,8 +1013,8 @@ void PS_Display(
         else  // Depth
         {
             color = zToLinearDepth(g.w);
-            if(color.r < fDepthRange.x)
-                color = float3(color.r / fDepthRange.x, 0, 0);
+            if(color.r < fDepthRange.x * 0.01)
+                color = float3(color.r / fDepthRange.x * 100, 0, 0);
             else if (isSky(g.w))
                 color = float3(0.1, 0.5, 1.0);
         }
