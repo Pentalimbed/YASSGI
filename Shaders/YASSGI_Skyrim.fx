@@ -111,6 +111,10 @@ static const float3 g_Poisson16[16] =
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 uniform float fFarPlane < source = "Far"; >;
+uniform float fNearPlane < source = "Near"; >;
+
+uniform float4x4 fViewProjMatrix < source = "ViewProjMatrix"; >;
+uniform float4x4 fInvViewProjMatrix < source = "InvViewProjMatrix"; >;
 
 uniform float fTimer  < source = "TimerReal"; >;
 uniform float fFrameTime   < source = "frametime";  >;
@@ -342,14 +346,13 @@ sampler samp_cubemap { Texture = tex_cubemap; };
 
 texture tex_normal : NORMAL_TAAMASK_SSRMASK;
 sampler samp_normal { Texture = tex_normal; };
+
+texture tex_depth : TARGET_MAIN_DEPTH;
+sampler samp_depth { Texture = tex_depth; };
 }
 
 namespace YASSGI
 {
-// blue noise
-texture tex_blue_noise   <source ="YASSGI_bleu.png";> { Width = YASSGI_NOISE_SIZE; Height = YASSGI_NOISE_SIZE; Format = RGBA8; };
-sampler samp_blue_noise                               { Texture = tex_blue_noise; AddressU = REPEAT; AddressV = REPEAT; AddressW = REPEAT;};
-
 // color
 texture tex_color  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = YASSGI_MIP_LEVEL;};
 sampler samp_color {Texture = tex_color;};
@@ -454,7 +457,7 @@ float2 viewSpaceToUv(float3 pos){
 float3 getDecodedNormal(float2 texcoord)
 {
 	float3 enc = tex2D(Skyrim::samp_normal, texcoord).xyz;
-	float2 fenc = enc*4-2;
+	float2 fenc = enc.xy*4-2;
     float f = dot(fenc,fenc);
     float g = sqrt(1-f/4);
     float3 n;
@@ -1002,7 +1005,7 @@ void PS_Display(
         float4 g = tex2D(samp_g, uv);
         if(fmod(fTimer, 8) > 4)  // Normal
         {
-            color = g.xyz * 0.5 * float3(1, 1, -1) + 0.5;  // for convention
+            color = g.xyz * -0.5 + 0.5;  // for convention
         }
         else  // Depth
         {
