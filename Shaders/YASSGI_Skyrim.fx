@@ -8,12 +8,14 @@
 */
 
 /*  TODO
-    ? firefly suppression
+    o firefly suppression
     o optical flow reprojection  
     - material properties
     o sky (kinda)
-    - use that blue noise somehow
+    x use that blue noise somehow
     o bitmask il
+    - motion vector distortion issue
+    - ghosting...
 */
 
 #include "ReShade.fxh"
@@ -116,6 +118,8 @@ uniform float fNearPlane < source = "Near"; >;
 uniform float4x4 fViewProjMatrix < source = "ViewProjMatrix"; >;
 uniform float4x4 fInvViewProjMatrix < source = "InvViewProjMatrix"; >;
 
+uniform float fFov < source = "FieldOfView"; >;
+
 uniform float fTimer  < source = "TimerReal"; >;
 uniform float fFrameTime   < source = "frametime";  >;
 
@@ -129,13 +133,13 @@ uniform bool bUseSkyrimNormal = false;
 
 // <---- Input ---->
 
-uniform int iFov <
-    ui_type = "slider";
-    ui_category = "Input";
-    ui_label = "Vertical FOV";
-    ui_min = 60; ui_max = 150;
-    ui_step = 1;
-> = 90;
+// uniform int iFov <
+//     ui_type = "slider";
+//     ui_category = "Input";
+//     ui_label = "Vertical FOV";
+//     ui_min = 60; ui_max = 150;
+//     ui_step = 1;
+// > = 90;
 
 uniform float2 fDepthRange <
     ui_type = "slider";
@@ -445,13 +449,13 @@ float getZ(float2 uv) {return linearDepthToZ(getLinearDepth(uv));}
 // src: qUINT
 float3 uvToViewSpace(float2 uv, float z)
 {
-    const float3 uvtoprojADD = float3(-tan(radians(iFov) * 0.5).xx, 1.0) * float2(1.0, BUFFER_WIDTH * BUFFER_RCP_HEIGHT).yxx;
+    const float3 uvtoprojADD = float3(-tan(fFov * 0.5).xx, 1.0) * float2(1.0, BUFFER_WIDTH * BUFFER_RCP_HEIGHT).yxx;
     const float3 uvtoprojMUL = float3(-2.0 * uvtoprojADD.xy, 0.0);
     return float3(uv.xyx * uvtoprojMUL + uvtoprojADD) * z;
 }
 float3 uvToViewSpace(float2 uv){return uvToViewSpace(uv, getZ(uv));}
 float2 viewSpaceToUv(float3 pos){
-    const float3 uvtoprojADD = float3(-tan(radians(iFov) * 0.5).xx, 1.0) * float2(1.0, BUFFER_WIDTH * BUFFER_RCP_HEIGHT).yxx;
+    const float3 uvtoprojADD = float3(-tan(fFov * 0.5).xx, 1.0) * float2(1.0, BUFFER_WIDTH * BUFFER_RCP_HEIGHT).yxx;
     const float3 uvtoprojMUL = float3(-2.0 * uvtoprojADD.xy, 0.0);
     const float4 projtouv = float4(rcp(uvtoprojMUL.xy), -rcp(uvtoprojMUL.xy) * uvtoprojADD.xy);
     return (pos.xy / pos.z) * projtouv.xy + projtouv.zw;
@@ -527,7 +531,7 @@ bool isInScreen(float2 uv)
 
 float getFrustumSize(float z)
 {
-    return 2.0f * z * tan(radians(iFov) * 0.5);
+    return 2.0f * z * tan(fFov * 0.5);
 }
 
 float3 fakeAlbedo(float3 color)
