@@ -1051,8 +1051,7 @@ void PS_Display(
     }
 }
 
-technique YASSGI_SKYRIM <
-    ui_tooltip = "!: This shader is slower in performance mode."; >
+technique YASSGI_SKYRIM
 {
     pass {
         VertexShader = PostProcessVS;
