@@ -216,7 +216,7 @@ void PS_GI(
     const float2 distrib = hammersley(
         dot(px_coord % iInterleavedSizePx, uint2(1, iInterleavedSizePx)),
         iInterleavedSizePx * iInterleavedSizePx);
-    // ʌʌʌ x for angle, y for stride
+    // ^^^ x for angle, y for stride
 
     // per slice
     const float rcp_dir_count = 1.0 / iDirCount;
@@ -251,7 +251,7 @@ void PS_GI(
             float2 offset_px = dir_px_slice * dist_px;
             float2 px_coord_sample = px_coord + offset_px;
             float2 uv_sample = (px_coord_sample + 0.5) * float2(BUFFER_RCP_WIDTH, BUFFER_RCP_HEIGHT);
-            // ʌʌʌ does this account for camera distortion? (SLAM PTSD)
+            // ^^^ does this account for camera distortion? (SLAM PTSD)
 
             uint mip_level = log2(dist_px / fBaseStridePx);
             [branch]  

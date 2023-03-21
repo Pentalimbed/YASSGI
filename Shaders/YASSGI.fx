@@ -35,8 +35,6 @@ namespace YASSGI
 
 #define BUFFER_SIZE uint2(BUFFER_WIDTH, BUFFER_HEIGHT)
 
-#define YASSGI_NOISE_SIZE 512
-
 #ifndef YASSGI_RENDER_SCALE
 #   define YASSGI_RENDER_SCALE 0.5
 #endif
@@ -69,6 +67,7 @@ static const float3x3 g_ACEScgToSRGB = float3x3(
     -0.024127059936902, -0.124620612286390,  1.148822109913262
 );
 
+// in case someone discovered a better color space
 #define g_colorInputMat g_sRGBToACEScg
 #define g_colorOutputMat g_ACEScgToSRGB
 
@@ -321,25 +320,6 @@ sampler samp_gi_ao_blur2 {Texture = tex_gi_ao_blur2;};
 // Functions
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-// <---- Util & Math ---->
-
-// return [tangent, bi-tangent, normal]
-float3x3 getBasis( float3 normal )
-{
-    float sz = sign( normal.z );
-    float a  = 1.0 / ( sz + normal.z );
-    float ya = normal.y * a;
-    float b  = normal.x * ya;
-    float c  = normal.x * sz;
-
-    float3 T = float3( c * normal.x * a - 1.0, sz * b, c );
-    float3 B = float3( b, normal.y * ya - sz, normal.y );
-
-    // Note: due to the quaternion formulation, the generated frame is rotated by 180 degrees,
-    // s.t. if N = (0, 0, 1), then T = (-1, 0, 0) and B = (0, -1, 0).
-    return float3x3( T, B, normal );
-}
-
 // <---- Input ---->
 
 float zToLinearDepth(float z) {return z * rcp(RESHADE_DEPTH_LINEARIZATION_FAR_PLANE);}
@@ -489,6 +469,9 @@ struct RayInfo
 };
 
 // super naive intersection scheme with exponential steps
+// started(deviated much) from: https://github.com/jebbyk/SSRT-for-reshade
+// exponential steps and mip level inspired by: https://zhuanlan.zhihu.com/p/97886108 i.e. UE4 SSGI
+// ^^^ to EPIC: not src!
 void simpleRayMarch(inout RayInfo ray)
 {
     ray.hit = false;
@@ -554,6 +537,7 @@ float4 atrous(sampler samp, float2 uv, float radius)
         w *= exp(-abs(g_curr.w - g_sample.w) / (1 * abs(dot(zgrad, offset_px.xy * radius)) + EPS)); // depth
         // w *= exp(-abs(lum_curr - lum[i]) / (fVarianceWeight * variance + EPS));                     // luminance
         w = saturate(w) * exp(-0.66 * length(offset_px)) * isInScreen(uv_sample);                   // gaussian kernel
+        // ^^^ -four- three horsemen of the SVGF sampling weights
 
         weightsum += w;
         sum += gi_sample * w;
@@ -584,6 +568,7 @@ void PS_InputSetup(
     float z = getZ(uv);
     float3 normal = getViewNormalAccurate(uv);
 
+    // inspired by weapon-related stuff in AstrayFX/RadiantGI
     if(isWeapon(z))
     {
         z = ((z - 1) * fWeapDepthMult) + 1;
@@ -626,8 +611,8 @@ void PS_GI(
         RayInfo ray;
         ray.orig = pos_orig;
         float3 raydir = sampleHemisphereCosWeighted(rand3.xy, normal_orig, pdf);
-        ray.stride = raydir * fBaseStride * (1 + (rand3.z - 1) * fStrideJitter);
-        ray.stride *= lerp(1, max(EPS, zToLinearDepth(pos_orig.z)), fDepthScaledStride);
+        ray.stride = raydir * fBaseStride * (1 + (rand3.z - 1) * fStrideJitter);  // banding avoiding
+        ray.stride *= lerp(1, max(EPS, zToLinearDepth(pos_orig.z)), fDepthScaledStride);  // sampling faraway pixels breaks cache coherency
         ray.spread_exp = fSpreadExp;
         
         simpleRayMarch(ray);
@@ -649,21 +634,19 @@ void PS_GI(
 
         // determine source color
         float3 hit_color = tex2Dlod(samp_color, float4(ray.uv, ray.spread_level, 0)).rgb;
-        hit_color += tex2Dlod(samp_gi_ao_accum_1, float4(ray.uv, ray.spread_level, 0)).rgb * fBounceMult;
-        hit_color = luminance(hit_color) > fLightSrcThres ? hit_color : 0;
-        hit_color *= is_backface ? fBackfaceLightMult : 1;
+        hit_color += tex2Dlod(samp_gi_ao_accum_1, float4(ray.uv, ray.spread_level, 0)).rgb * fBounceMult;  // lazy multi bounce
+        hit_color = luminance(hit_color) > fLightSrcThres ? hit_color : 0;  // straight up length() is ok too I guess but maybe costlier?
+        hit_color *= is_backface ? fBackfaceLightMult : 1;  // a.k.a. neon sign fix if you go to that club in rp_southside
 
         // brdf
         hit_color *= albedo;
-        hit_color *= PI;  // cos-weighted sampling
+        hit_color *= PI;  // cos-weighted sampling + lambert = chill; oren-nayar = black spots, not chill
         hit_color = max(hit_color, 0);
         
         gi_ao.rgb += hit_color * rcp_numsample;
     }
 }
 
-// algo: svgf https://research.nvidia.com/sites/default/files/pubs/2017-07_Spatiotemporal-Variance-Guided-Filtering%3A//svgf_preprint.pdf
-//     referenced: https://www.shadertoy.com/view/tlXfRX
 void PS_Accumulation(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
     out float4 gi_ao_accum : SV_Target0, out float temporal_info : SV_Target1
@@ -691,25 +674,29 @@ void PS_Accumulation(
     float4 g_curr = tex2D(samp_g, uv);
     float4 g_prev = tex2D(samp_g_prev, uv_prev);
 
-    // float3 color_curr = tex2D(samp_color, uv).rgb;
-    // float3 color_prev = tex2D(samp_color, uv_prev).rgb;
-
-    // disocclusion
-    float z_delta = abs(g_curr.w - g_prev.w) / g_curr.w / max(fFrameTime, 1.0);
-    float delta = z_delta * abs(dot(g_curr.xyz, normalize(uvToViewSpace(uv, g_curr.w))));  // Geometry
+    // disocclusion. geometry deviation and hist_len(accum speed) update method from that REBLUR paper.
+    // ^^^ to NV: not src!
+    float z_delta = abs(g_curr.w - g_prev.w) / g_curr.w / max(fFrameTime, 1.0);  // depth and frame interval weighted
+    float delta = z_delta * abs(dot(g_curr.xyz, normalize(uvToViewSpace(uv, g_curr.w))));  // geometry: compare deviation of plane instead of point
+    // can't tweak the params for a smooth transition from valid to disoccluded, so just discard
+    // à la à-trous/svgf
     bool occluded = delta > fDisocclThres * 0.01;
-
+    
     float hist_len_new = min(hist_len_prev * (!occluded) + 1, iMaxAccumFrames);
     float4 gi_ao_new = occluded ? gi_ao_curr : lerp(gi_ao_prev, gi_ao_curr, rcp(hist_len_new));
 
     // finalize
+
+    // - here lies what used to be some luminance-based firefly suppression code -
+
     gi_ao_accum = gi_ao_new;
     temporal_info = hist_len_new;
 }
 
+// algo: Ray Tracing Gems Chapter 25
 // orig src (missing the latter parts): https://alain.xyz/blog/ray-tracing-denoising
 // src: https://www.yuque.com/isumiai/cg/efwkig#Sf1rG
-// algo: Ray Tracing Gems Chapter 25
+// does this really have any use other than swapping buffer?
 void PS_Firefly(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
     out float4 gi_ao : SV_Target0, out float temporal_info : SV_Target1
@@ -736,9 +723,9 @@ void PS_Firefly(
     temporal_info = hist_len;
 }
 
-// Edge-avoiding À-trous: https://jo.dreggn.org/home/2010_atrous.pdf
-// svgf (impl without variance): https://research.nvidia.com/sites/default/files/pubs/2017-07_Spatiotemporal-Variance-Guided-Filtering%3A//svgf_preprint.pdf
-//     referenced: https://www.shadertoy.com/view/tlXfRX
+// algo: Edge-avoiding À-trous https://jo.dreggn.org/home/2010_atrous.pdf
+//     svgf (impl without variance) https://research.nvidia.com/sites/default/files/pubs/2017-07_Spatiotemporal-Variance-Guided-Filtering%3A//svgf_preprint.pdf
+// referenced: https://www.shadertoy.com/view/tlXfRX
 void PS_Blur1(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
     out float4 color : SV_Target0
@@ -792,6 +779,7 @@ void PS_Display(
         color.rgb = albedo.rgb;
         color.rgb += gi_ao.rgb * fIlStrength;
         color.rgb = albedo.rgb * pow(1 - gi_ao.w, fAoStrength);  // okey dokey (accum too maybe?)
+        // ^^^ could be exp
         color.rgb = saturate(mul(g_colorOutputMat, color.rgb));
     }
     else if(iViewMode == 1)  // Depth / Normal
@@ -799,7 +787,7 @@ void PS_Display(
         float4 g = tex2D(samp_g, uv);
         if((iFrameCount / 300) % 2)  // Normal
         {
-            color = g.xyz * 0.5 * float3(1, 1, -1) + 0.5;  // for convention
+            color = -g.xyz * 0.5 + 0.5;  // for convention
         }
         else  // Depth
         {
@@ -833,7 +821,7 @@ void PS_Display(
 }
 
 technique YASSGI <
-    ui_tooltip = "!: This shader is slower in performance mode on dx9!"; >
+    ui_tooltip = "!: This shader is slower with performance mode on dx9!"; >
 {
     pass {
         VertexShader = PostProcessVS;
@@ -877,7 +865,7 @@ technique YASSGI <
         VertexShader = PostProcessVS;
         PixelShader = PS_Blur3;
         RenderTarget0 = tex_gi_ao_accum_1;
-    }
+    }  // variable pass number
     // pass {
     //     VertexShader = PostProcessVS;
     //     PixelShader = PS_Blur4;
