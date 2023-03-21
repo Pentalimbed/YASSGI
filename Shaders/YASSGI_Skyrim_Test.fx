@@ -124,6 +124,22 @@ uniform float fSampleRangePx <
     ui_step = 1;
 > = 8;
 
+uniform uint iBlurSamples <
+    ui_type = "slider";
+    ui_category = "Filter";
+    ui_label = "Blur Samples";
+    ui_min = 0; ui_max = 64;
+    ui_step = 1;
+> = 32;
+
+uniform uint iBlurLOD <
+    ui_type = "slider";
+    ui_category = "Filter";
+    ui_label = "Blur LOD";
+    ui_min = 0; ui_max = MAX_MIP - 1;
+    ui_step = 1;
+> = 2;
+
 uniform float fIlStrength <
     ui_type = "slider";
     ui_category = "Mixing";
@@ -169,13 +185,13 @@ sampler samp_blur_normal_z {Texture = tex_blur_normal_z;};
 texture tex_blur_color  {Width = BUFFER_WIDTH / INTERLEAVED_SIZE_PX; Height = BUFFER_HEIGHT / INTERLEAVED_SIZE_PX; Format = RGBA16F; MipLevels = MAX_MIP;};
 sampler samp_blur_color {Texture = tex_blur_color;};
 
-texture tex_gi_ao  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F;};
+texture tex_gi_ao  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 2;};
 sampler samp_gi_ao {Texture = tex_gi_ao;};
 
-texture tex_gi_ao_blur1  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F;};
+texture tex_gi_ao_blur1  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 2;};
 sampler samp_gi_ao_blur1 {Texture = tex_gi_ao_blur1;};
 
-texture tex_gi_ao_blur2  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F;};
+texture tex_gi_ao_blur2  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 2;};
 sampler samp_gi_ao_blur2 {Texture = tex_gi_ao_blur2;};
 
 // <---- Utility ---->
@@ -345,8 +361,7 @@ void PS_GI(
 
     gi_ao = 0;
 
-    // const float3 rand = pcg3d(uint3(uv * BUFFER_SIZE, iFrameCount)) / MAX_UINT_F;
-    float3 rand = 0;
+    const float3 rand = pcg3d(uint3(uv * BUFFER_SIZE, iFrameCount)) / MAX_UINT_F;
 
     const uint2 px_coord = uv * BUFFER_SIZE;
     
@@ -368,7 +383,7 @@ void PS_GI(
     // some consts
     const float rcp_dir_count = 1.0 / iDirCount;
     const float angle_sector = 2.0 * PI * rcp_dir_count;  // may confuse with bitmask il sectors; angle_increment? angle_pizza_slice?
-    const float stride_px = max(1, fBaseStridePx + fBaseStridePx * (distrib.y + rand.x - 1) * 0.5);
+    const float stride_px = max(1, fBaseStridePx + fBaseStridePx * (distrib.y + rand.x - 1) * 0.7);
     const float log2_stride_px = log2(stride_px);
 
     // per slice
@@ -407,6 +422,8 @@ void PS_GI(
             [loop]
             while(dist_px < max_dist && step < 64)
             {
+                float4 rand_2 = pcg4d(uint4(idx_dir, side, step, rand.z)) / MAX_UINT_F;
+
                 const float2 offset_px = dir_px_slice * dist_px;
                 const float2 px_coord_sample = px_coord + side_sign * offset_px;
                 const float2 uv_sample = (px_coord_sample + 0.5) * float2(BUFFER_RCP_WIDTH, BUFFER_RCP_HEIGHT);
@@ -420,7 +437,7 @@ void PS_GI(
 
                 float3 color_sample = tex2Dlod(samp_blur_color, float4(uv_sample, mip_level, 0)).rgb;
                 
-                dist_px += stride_px * exp2((step + distrib.y) * fSpreadExp);
+                dist_px += stride_px * (1 + (rand_2.x - 0.5)) * exp2((step + distrib.y) * fSpreadExp);
                 ++step;  // 2 same stride at the start. more precise perhaps (?)
             }
 
@@ -431,75 +448,8 @@ void PS_GI(
 
     // temp = rawZToLinear01(raw_z) * fFarPlane - pos_v.z;
 
-    gi_ao.w = saturate(1 - sum.w);
+    gi_ao.w = saturate(1 - sum.w / iDirCount);
     // gi_ao = temp;
-}
-
-
-/*
-    Reference:
-    Edge-avoiding À-trous
-        https://jo.dreggn.org/home/2010_atrous.pdf
-    SVGF (impl without variance)
-        https://research.nvidia.com/sites/default/files/pubs/2017-07_Spatiotemporal-Variance-Guided-Filtering%3A//svgf_preprint.pdf
-        https://www.shadertoy.com/view/tlXfRX
-*/
-float4 atrous(sampler samp, float2 uv, float radius)
-{
-    const float rand = pcg4d(uint4(uv * BUFFER_SIZE, iFrameCount, radius)).x / MAX_UINT_F;
-
-    const uint2 px_coord = uv * BUFFER_SIZE;
-
-    const float3 normal = unpackNormal(tex2Dfetch(Skyrim::samp_normal, px_coord).xy);
-    const float z = rawZToLinear01(tex2Dfetch(Skyrim::samp_depth, px_coord).x) * fFarPlane;
-    const float2 zgrad = float2(ddx(z), ddy(z));
-    const float4 color = tex2Dfetch(samp, px_coord);
-
-    float weightsum = 1;
-    float4 sum = color;
-    [unroll] for (int i = 0; i < 8; ++i)
-    {
-        float2 offset_px; sincos((i + rand) * 0.25 * PI, offset_px.y, offset_px.x); // <-sincos here!
-        float2 uv_sample = uv + offset_px * radius * float2(BUFFER_RCP_WIDTH, BUFFER_RCP_HEIGHT);
-
-        const float3 normal_samp = unpackNormal(tex2D(Skyrim::samp_normal, uv_sample).xy);
-        const float z_samp = rawZToLinear01(tex2D(Skyrim::samp_depth, uv_sample).x) * fFarPlane;
-        const float4 color_sample = tex2D(samp, uv_sample);
-
-        float w = pow(max(0, dot(normal, normal_samp)), 64);                          // normal
-        w *= exp(-abs(z - z_samp) / (1 * abs(dot(zgrad, offset_px * radius)) + EPS)); // depth
-        // w *= exp(-abs(lum_curr - lum[i]) / (fVarianceWeight * variance + EPS));    // luminance (should except ao)
-        w = saturate(w) * exp(-0.66 * length(offset_px)) * isInScreen(uv_sample);     // gaussian kernel
-        // ^^^ -four- three horsemen of the SVGF sampling weights
-
-        weightsum += w;
-        sum += color_sample * w;
-    }
-    return (sum / weightsum);
-}
-
-void PS_Blur1(
-    in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
-    out float4 color : SV_Target0
-)
-{
-    color = atrous(samp_gi_ao, uv, 2);
-}
-
-void PS_Blur2(
-    in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
-    out float4 color : SV_Target0
-)
-{
-    color = atrous(samp_gi_ao_blur1, uv, 4);
-}
-
-void PS_Blur3(
-    in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
-    out float4 color : SV_Target0
-)
-{
-    color = atrous(samp_gi_ao_blur2, uv, 8);
 }
 
 void PS_Display(
@@ -507,7 +457,7 @@ void PS_Display(
     out float4 color : SV_Target)
 {
     color = tex2D(ReShade::BackBuffer, uv);
-    float4 gi_ao = tex2D(samp_gi_ao_blur2, uv);
+    float4 gi_ao = tex2Dlod(samp_gi_ao, float4(uv, 2, 0));
     
     if(iViewMode == 0)  // None
     {
@@ -535,21 +485,6 @@ technique YASSGI_TEST
         PixelShader = PS_GI;
         RenderTarget0 = tex_gi_ao;
     }
-    pass {
-        VertexShader = PostProcessVS;
-        PixelShader = PS_Blur1;
-        RenderTarget0 = tex_gi_ao_blur1;
-    }
-    pass {
-        VertexShader = PostProcessVS;
-        PixelShader = PS_Blur2;
-        RenderTarget0 = tex_gi_ao_blur2;
-    }
-    // pass {
-    //     VertexShader = PostProcessVS;
-    //     PixelShader = PS_Blur3;
-    //     RenderTarget0 = tex_gi_ao_blur1;
-    // }
     pass {
         VertexShader = PostProcessVS;
         PixelShader = PS_Display;
