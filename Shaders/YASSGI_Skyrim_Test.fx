@@ -32,6 +32,8 @@ namespace YASSGI_SKYRIM_TEST
 
 #define BUFFER_SIZE uint2(BUFFER_WIDTH, BUFFER_HEIGHT)
 
+#define INTERLEAVED_SIZE_PX 4
+#define MAX_MIP 8
 
 // color space conversion matrices
 // src: https://www.colour-science.org/apps/  using CAT02
@@ -66,8 +68,15 @@ uniform float fTimer      < source = "TimerReal"; >;
 uniform float fFrameTime  < source = "TimingsReal"; >;
 
 
+uniform float2 fZRange <
+    ui_type = "slider";
+    ui_category = "Input";
+    ui_label = "Weapon/Sky Z Range";
+    ui_min = 0.0; ui_max = 25000;
+    ui_step = 0.1;
+> = float2(0.1, 20000);
+
 uniform uint iDirCount = 4;  // half side direction, same as Sannikov, bc we march different steps on each size
-uniform uint iInterleavedSizePx = 4;
 uniform float fSampleRangePx = 8;
 uniform float fBaseStridePx = 1;
 uniform float fSpreadExp = 0.5;
@@ -97,10 +106,10 @@ namespace YASSGI_SKYRIM_TEST
 // blurred normal only used for rough backface verification as in the hbil paper.
 // tbf orig paper uses interleaved buffers (not blurred) but no sampler spamming for dx9.
 //                                          (or perhaps a separate shader(s) for those?)
-texture tex_blur_normal_z  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA32F; MipLevels = 10;};
+texture tex_blur_normal_z  {Width = BUFFER_WIDTH / INTERLEAVED_SIZE_PX; Height = BUFFER_HEIGHT / INTERLEAVED_SIZE_PX; Format = RGBA32F; MipLevels = MAX_MIP;};
 sampler samp_blur_normal_z {Texture = tex_blur_normal_z;};
 
-texture tex_blur_color  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 10;};
+texture tex_blur_color  {Width = BUFFER_WIDTH / INTERLEAVED_SIZE_PX; Height = BUFFER_HEIGHT / INTERLEAVED_SIZE_PX; Format = RGBA16F; MipLevels = MAX_MIP;};
 sampler samp_blur_color {Texture = tex_blur_color;};
 
 texture tex_gi_ao  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F;};
@@ -152,6 +161,11 @@ float3 viewToUvz(float3 pos){
     return pos_clip.xyz;
 }
 
+bool isNear(float z){return z < fNearPlane;}
+bool isFar(float z){return z > fFarPlane;}
+bool isWeapon(float z){return z < fZRange.x;}
+bool isSky(float z){return z > fZRange.y;}
+
 // <---- Sampling ---->
 
 // src: https://www.pbr-book.org/3ed-2018/Sampling_and_Reconstruction/The_Halton_Sampler
@@ -162,7 +176,7 @@ float radicalInverse(uint i)
     bits = (bits & 0x33333333u) << 2u | (bits & 0xCCCCCCCCu) >> 2u;
     bits = (bits & 0x0F0F0F0Fu) << 4u | (bits & 0xF0F0F0F0u) >> 4u;
     bits = (bits & 0x00FF00FFu) << 8u | (bits & 0xFF00FF00u) >> 8u;
-    return bits / float(0xFFFFFFFFu);
+    return bits / 4294967295.0;  // can't use 0xffffffff for some reason
 }
 float2 hammersley(uint i, uint N) {return float2(float(i) / N, radicalInverse(i));}
 
@@ -181,7 +195,7 @@ void PS_PreBlur(
     for(uint i = 0; i < 8; ++i)
     {
         float2 offset_px; sincos(i * 0.25 * PI, offset_px.y, offset_px.x);  // <-sincos here!
-        const float2 offset_uv = offset_px * iInterleavedSizePx * 0.5 * float2(BUFFER_RCP_WIDTH, BUFFER_RCP_HEIGHT);
+        const float2 offset_uv = offset_px * INTERLEAVED_SIZE_PX * 0.5 * float2(BUFFER_RCP_WIDTH, BUFFER_RCP_HEIGHT);
         const float2 uv_sample = uv + offset_uv;
 
         const float w = exp(-0.66 * length(offset_px)) * isInScreen(uv_sample);
@@ -201,12 +215,19 @@ void PS_GI(
 {
     float4 temp = 0;  // temp vec for debug
 
+    gi_ao = 0;
+
     const uint2 px_coord = uv * BUFFER_SIZE;
     
-    const float3 normal_v = unpackNormal(tex2Dfetch(Skyrim::samp_normal, px_coord).xy);
+    float3 normal_v = unpackNormal(tex2Dfetch(Skyrim::samp_normal, px_coord).xy);
+    normal_v.z = max(1e-3, normal_v.z);
     const float raw_z = tex2Dfetch(Skyrim::samp_depth, px_coord).x;
     const float3 pos_v = uvzToView(uv, raw_z);
     const float3 dir_v_view = -normalize(pos_v);
+
+    [branch]
+    if(isWeapon(pos_v.z) || isSky(pos_v.z))  // leave sky alone
+        return;
 
     // local camera plane
     const float3 dir_v_local_x = normalize(cross(float3(0, -1, 0), dir_v_view));
@@ -214,8 +235,8 @@ void PS_GI(
 
     // interleaved sampling
     const float2 distrib = hammersley(
-        dot(px_coord % iInterleavedSizePx, uint2(1, iInterleavedSizePx)),
-        iInterleavedSizePx * iInterleavedSizePx);
+        dot(px_coord % INTERLEAVED_SIZE_PX, uint2(1, INTERLEAVED_SIZE_PX)),
+        INTERLEAVED_SIZE_PX * INTERLEAVED_SIZE_PX);
     // ^^^ x for angle, y for stride
 
     // per slice
@@ -232,49 +253,51 @@ void PS_GI(
         const float sin_alpha = dir_v_slice.z;
         const float cos_alpha = sqrt(1 - sin_alpha * sin_alpha) * 0.99;  // 0.99 from hbil code, prevent NaN
 
-        // proj normal
-        const float2 normal_s_proj = normalize(float2(dot(normal_v, dir_v_slice), dot(normal_v, dir_v_view)));
-        float t = -normal_s_proj.x / normal_s_proj.y;
+        // const float2 normal_s_proj = normalize(float2(dot(normal_v, dir_v_slice), dot(normal_v, dir_v_view)));
+        const float t = -dot(dir_l_slice, normal_v.xy) / normal_v.z;
 
         // march distance
-        const float2 dir_uv_slice = viewToUvz(pos_v + dir_v_slice * EPS).xy - viewToUvz(pos_v).xy;  // sign f*ck-up prevention
-        const float2 dir_px_slice = normalize(dir_uv_slice * BUFFER_SIZE);
+        const float2 dir_uv_slice = viewToUvz(pos_v + dir_v_slice).xy - viewToUvz(pos_v).xy;  // sign f*ck-up prevention
+        const float2 dir_px_slice = normalize(dir_uv_slice * BUFFER_SIZE) * float2(1, -1);
         const float dist_to_screen = intersectBox(px_coord, dir_px_slice, float4(0, 0, BUFFER_SIZE)).y;
 
         // marching
+        const float stride_px = max(1, fBaseStridePx);
+        const float log2_stride_px = log2(stride_px);
         uint step = 0;
-        float dist_px = fBaseStridePx;
+        float dist_px = stride_px;
         float max_cos_theta = t * rsqrt(1 + t * t);
         [loop]
-        while(dist_px < dist_to_screen)
+        while(dist_px < dist_to_screen && step < 64)
         {
-            float2 offset_px = dir_px_slice * dist_px;
-            float2 px_coord_sample = px_coord + offset_px;
-            float2 uv_sample = (px_coord_sample + 0.5) * float2(BUFFER_RCP_WIDTH, BUFFER_RCP_HEIGHT);
+            const float2 offset_px = dir_px_slice * dist_px;
+            const float2 px_coord_sample = px_coord + offset_px;
+            const float2 uv_sample = (px_coord_sample + 0.5) * float2(BUFFER_RCP_WIDTH, BUFFER_RCP_HEIGHT);
             // ^^^ does this account for camera distortion? (SLAM PTSD)
 
-            uint mip_level = log2(dist_px / fBaseStridePx);
-            [branch]  
-            if(mip_level >= 10) break;
+            const uint mip_level = min(MAX_MIP, log2(dist_px) - log2_stride_px);
+            // [branch]  
+            // if(mip_level >= MAX_MIP) break;
 
-            float raw_z_sample = tex2Dlod(samp_blur_normal_z, float4(uv_sample, mip_level, 0)).w;
-            float3 pos_v_sample = uvzToView(uv_sample, raw_z_sample);
-            float3 pos_v_offset = pos_v_sample - pos_v;
+            const float raw_z_sample = tex2Dlod(samp_blur_normal_z, float4(uv_sample, mip_level, 0)).w;
+            const float3 pos_v_sample = uvzToView(uv_sample, raw_z_sample);
+            const float3 pos_v_offset = pos_v_sample - pos_v;
+            const float len_offset_v = length(pos_v_offset.xy);
 
-            float cos_theta = 
-                dot(float2(sin_alpha, cos_alpha), float2(abs(pos_v_offset.x), -pos_v_offset.z)) *
-                rsqrt(pos_v_offset.x * pos_v_offset.x - pos_v_offset.z * pos_v_offset.z);
+            const float cos_theta = 
+                dot(float2(sin_alpha, cos_alpha), float2(len_offset_v, -pos_v_offset.z)) *
+                rsqrt(len_offset_v * len_offset_v - pos_v_offset.z * pos_v_offset.z);
             max_cos_theta = max(cos_theta, max_cos_theta);
 
             // float3 color_sample = tex2Dlod(samp_blur_color, float4(uv_sample, mip_level, 0)).rgb;
             
-            dist_px += fBaseStridePx * exp2(step * fSpreadExp);
+            dist_px += stride_px * exp2((step + distrib.y) * fSpreadExp);
             ++step;  // 2 same stride at the start. more precise perhaps (?)
         }
 
         sum.w += max_cos_theta * rcp_dir_count;
 
-        temp.xy = normal_s_proj * 0.5 + 0.5;
+        temp.x = cos_alpha * 0.5 + 0.5;
     }
 
     gi_ao = 1 - sum.w;

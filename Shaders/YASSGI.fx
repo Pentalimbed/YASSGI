@@ -386,7 +386,7 @@ bool isInScreen(float2 uv){return all(uv > 0) && all(uv < 1);}
 
 float3 fakeAlbedo(float3 color)
 {
-    float3 albedo = pow(color, fAlbedoSatPower * length(color));  // length(color) suppress saturation of darker colors
+    float3 albedo = pow(max(0, color), fAlbedoSatPower * length(color));  // length(color) suppress saturation of darker colors
     albedo = saturate(lerp(albedo, normalize(albedo), fAlbedoNorm));
     return albedo;
 }
@@ -778,8 +778,7 @@ void PS_Display(
         float4 albedo = tex2D(samp_color, uv);
         color.rgb = albedo.rgb;
         color.rgb += gi_ao.rgb * fIlStrength;
-        color.rgb = albedo.rgb * pow(1 - gi_ao.w, fAoStrength);  // okey dokey (accum too maybe?)
-        // ^^^ could be exp
+        color.rgb = color.rgb * pow(saturate(1 - gi_ao.w), fAoStrength);  // okey dokey
         color.rgb = saturate(mul(g_colorOutputMat, color.rgb));
     }
     else if(iViewMode == 1)  // Depth / Normal
@@ -805,13 +804,13 @@ void PS_Display(
     else if(iViewMode == 3)  // GI
     {
         color = (iFrameCount / 300) % 2 ?
-            pow(1 - tex2D(samp_gi_ao, uv).w, fAoStrength) :
+            pow(saturate(1 - tex2D(samp_gi_ao, uv).w), fAoStrength) :
             mul(g_colorOutputMat, tex2D(samp_gi_ao, uv).xyz * fIlStrength);
     }
     else if(iViewMode == 4)  // GI Accum
     {
         color = (iFrameCount / 300) % 2 ?
-            pow(1 - tex2D(samp_gi_ao_accum, uv).w, fAoStrength) :
+            pow(saturate(1 - tex2D(samp_gi_ao_accum, uv).w), fAoStrength) :
             mul(g_colorOutputMat, tex2D(samp_gi_ao_accum, uv).xyz * fIlStrength);
     }
     else if(iViewMode == 5)  // Accum speed
