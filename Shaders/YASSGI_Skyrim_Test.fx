@@ -26,6 +26,8 @@ namespace YASSGI_SKYRIM_TEST
 #define HALF_PI 1.5707963267948966
 #define RCP_PI  0.3183098861837067
 
+#define MAX_UINT_F 4294967295.0
+
 #define EPS 1e-6
 
 #define BUFFER_SIZE uint2(BUFFER_WIDTH, BUFFER_HEIGHT)
@@ -134,7 +136,7 @@ uniform float fAoStrength <
     ui_type = "slider";
     ui_category = "Mixing";
     ui_label = "AO";
-    ui_min = 0.0; ui_max = 1.0;
+    ui_min = 0.0; ui_max = 4.0;
     ui_step = 0.01;
 > = 1.0;
 
@@ -245,9 +247,50 @@ float radicalInverse(uint i)
     bits = (bits & 0x33333333u) << 2u | (bits & 0xCCCCCCCCu) >> 2u;
     bits = (bits & 0x0F0F0F0Fu) << 4u | (bits & 0xF0F0F0F0u) >> 4u;
     bits = (bits & 0x00FF00FFu) << 8u | (bits & 0xFF00FF00u) >> 8u;
-    return bits / 4294967295.0;  // can't use 0xffffffff for some reason
+    return bits / MAX_UINT_F;  // can't use 0xffffffff for some reason
 }
 float2 hammersley(uint i, uint N) {return float2(float(i) / N, radicalInverse(i));}
+
+/*
+    Source:
+    Hash Functions for GPU Rendering 
+        http://www.jcgt.org/published/0009/03/02/
+        https://www.shadertoy.com/view/XlGcRh
+*/
+uint3 pcg3d(uint3 v) {
+
+    v = v * 1664525u + 1013904223u;
+
+    v.x += v.y*v.z;
+    v.y += v.z*v.x;
+    v.z += v.x*v.y;
+
+    v ^= v >> 16u;
+
+    v.x += v.y*v.z;
+    v.y += v.z*v.x;
+    v.z += v.x*v.y;
+
+    return v;
+}
+uint4 pcg4d(uint4 v)
+{
+    v = v * 1664525u + 1013904223u;
+    
+    v.x += v.y*v.w;
+    v.y += v.z*v.x;
+    v.z += v.x*v.y;
+    v.w += v.y*v.z;
+    
+    v ^= v >> 16u;
+    
+    v.x += v.y*v.w;
+    v.y += v.z*v.x;
+    v.z += v.x*v.y;
+    v.w += v.y*v.z;
+    
+    return v;
+}
 
 
 /*
@@ -302,6 +345,9 @@ void PS_GI(
 
     gi_ao = 0;
 
+    // const float3 rand = pcg3d(uint3(uv * BUFFER_SIZE, iFrameCount)) / MAX_UINT_F;
+    float3 rand = 0;
+
     const uint2 px_coord = uv * BUFFER_SIZE;
     
     float3 normal_v = unpackNormal(tex2Dfetch(Skyrim::samp_normal, px_coord).xy);
@@ -320,18 +366,18 @@ void PS_GI(
     // ^^^ x for angle, y for stride
 
     // some consts
-    const float stride_px = max(1, fBaseStridePx);
-    const float log2_stride_px = log2(stride_px);
     const float rcp_dir_count = 1.0 / iDirCount;
     const float angle_sector = 2.0 * PI * rcp_dir_count;  // may confuse with bitmask il sectors; angle_increment? angle_pizza_slice?
-    
+    const float stride_px = max(1, fBaseStridePx + fBaseStridePx * (distrib.y + rand.x - 1) * 0.5);
+    const float log2_stride_px = log2(stride_px);
+
     // per slice
     float4 sum = 0;
     [loop]  // unroll?
     for(uint idx_dir = 0; idx_dir < iDirCount; ++idx_dir)
     {
         // slice directions
-        const float angle_slice = (idx_dir + distrib.x) * angle_sector;
+        const float angle_slice = (idx_dir + distrib.x + rand.y) * angle_sector;
         float2 dir_px_slice; sincos(angle_slice, dir_px_slice.y, dir_px_slice.x);  // <-sincos here!
         const float2 dir_uv_slice = normalize(dir_px_slice * float2(BUFFER_WIDTH * BUFFER_RCP_HEIGHT, 1));
 
@@ -400,6 +446,8 @@ void PS_GI(
 */
 float4 atrous(sampler samp, float2 uv, float radius)
 {
+    const float rand = pcg4d(uint4(uv * BUFFER_SIZE, iFrameCount, radius)).x / MAX_UINT_F;
+
     const uint2 px_coord = uv * BUFFER_SIZE;
 
     const float3 normal = unpackNormal(tex2Dfetch(Skyrim::samp_normal, px_coord).xy);
@@ -411,7 +459,7 @@ float4 atrous(sampler samp, float2 uv, float radius)
     float4 sum = color;
     [unroll] for (int i = 0; i < 8; ++i)
     {
-        float2 offset_px; sincos(i * 0.25 * PI, offset_px.y, offset_px.x); // <-sincos here!
+        float2 offset_px; sincos((i + rand) * 0.25 * PI, offset_px.y, offset_px.x); // <-sincos here!
         float2 uv_sample = uv + offset_px * radius * float2(BUFFER_RCP_WIDTH, BUFFER_RCP_HEIGHT);
 
         const float3 normal_samp = unpackNormal(tex2D(Skyrim::samp_normal, uv_sample).xy);
@@ -459,19 +507,18 @@ void PS_Display(
     out float4 color : SV_Target)
 {
     color = tex2D(ReShade::BackBuffer, uv);
+    float4 gi_ao = tex2D(samp_gi_ao_blur2, uv);
     
     if(iViewMode == 0)  // None
     {
-        float4 gi_ao = tex2D(samp_gi_ao_blur1, uv);
         color.rgb = mul(g_colorInputMat, color.rgb);
         // color.rgb += gi_ao.rgb * fIlStrength;
-        color.rgb = color.rgb * pow(saturate(1 - gi_ao.w), fAoStrength);
+        color.rgb = color.rgb * exp2(-gi_ao.a * fAoStrength);
         color.rgb = saturate(mul(g_colorOutputMat, color.rgb));
     }
     else if(iViewMode == 1)  // AO
     {
-        float4 gi_ao = tex2D(samp_gi_ao_blur1, uv);
-        color.rgb = 1 * pow(saturate(1 - gi_ao.w), fAoStrength);
+        color.rgb = exp2(-gi_ao.a * fAoStrength);
     }
 }
 
@@ -498,11 +545,11 @@ technique YASSGI_TEST
         PixelShader = PS_Blur2;
         RenderTarget0 = tex_gi_ao_blur2;
     }
-    pass {
-        VertexShader = PostProcessVS;
-        PixelShader = PS_Blur3;
-        RenderTarget0 = tex_gi_ao_blur1;
-    }
+    // pass {
+    //     VertexShader = PostProcessVS;
+    //     PixelShader = PS_Blur3;
+    //     RenderTarget0 = tex_gi_ao_blur1;
+    // }
     pass {
         VertexShader = PostProcessVS;
         PixelShader = PS_Display;
