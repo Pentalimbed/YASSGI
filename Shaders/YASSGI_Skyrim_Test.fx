@@ -306,7 +306,7 @@ void PS_GI(
     
     float3 normal_v = unpackNormal(tex2Dfetch(Skyrim::samp_normal, px_coord).xy);
     const float raw_z = tex2Dfetch(Skyrim::samp_depth, px_coord).x;
-    const float3 pos_v = uvzToView(uv, raw_z);
+    const float3 pos_v = uvzToView(uv, raw_z) * 0.9995;  // closer to the screen bc we're using blurred geometry
     const float3 dir_v_view = -normalize(pos_v);
 
     [branch]
