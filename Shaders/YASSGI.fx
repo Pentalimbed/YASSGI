@@ -339,15 +339,7 @@ float3x3 getBasis( float3 normal )
     return float3x3( T, B, normal );
 }
 
-// src: https://www.khronos.org/registry/OpenGL/extensions/NV/NV_blend_equation_advanced.txt
-float3 overlay(float3 a, float3 b, float alpha)
-{
-    float3 retval = lerp(2 * a * b, 1.0 - 2 * (1.0 - a) * (1.0 - b), step(0.5, a));
-    return lerp(a, retval, alpha);
-}
-
 // <---- Input ---->
-
 
 float zToLinearDepth(float z) {return z * rcp(RESHADE_DEPTH_LINEARIZATION_FAR_PLANE);}
 float linearDepthToZ(float depth) {return depth * RESHADE_DEPTH_LINEARIZATION_FAR_PLANE;}
@@ -430,7 +422,7 @@ float luminance(float3 color)
 
 // <---- Random & Sampling ---->
 
-/// @source https://zhuanlan.zhihu.com/p/390862782
+/// src: https://gist.github.com/hao5119266/f5b22c71a01310b5dd0db345bf4b5bfb
 float rand4dTo1d(float4 value, float a, float4 b)
 {
     float4 small_val = sin(value);
@@ -451,7 +443,7 @@ float2 sampleDisk(float2 rand2)
 {
     return float2(sqrt(rand2.x), 2 * PI * rand2.y);
 }
-// src: https://alexanderameye.github.io/notes/sampling-the-hemisphere/
+// algo: https://alexanderameye.github.io/notes/sampling-the-hemisphere/
 float3 sampleHemisphereUniform(float2 rand2, float3 normal, out float pdf)
 {
     float cos_theta = rand2.x;
@@ -673,8 +665,8 @@ void PS_GI(
     }
 }
 
-// src: svgf https://research.nvidia.com/sites/default/files/pubs/2017-07_Spatiotemporal-Variance-Guided-Filtering%3A//svgf_preprint.pdf
-//     shadertoy: https://www.shadertoy.com/view/tlXfRX
+// algo: svgf https://research.nvidia.com/sites/default/files/pubs/2017-07_Spatiotemporal-Variance-Guided-Filtering%3A//svgf_preprint.pdf
+//     referenced: https://www.shadertoy.com/view/tlXfRX
 void PS_Accumulation(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
     out float4 gi_ao_accum : SV_Target0, out float temporal_info : SV_Target1
@@ -721,6 +713,7 @@ void PS_Accumulation(
 
 // orig src (missing the latter parts): https://alain.xyz/blog/ray-tracing-denoising
 // src: https://www.yuque.com/isumiai/cg/efwkig#Sf1rG
+// src fr: Ray Tracing Gems Chapter 25
 void PS_Firefly(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
     out float4 gi_ao : SV_Target0, out float temporal_info : SV_Target1
@@ -747,10 +740,9 @@ void PS_Firefly(
     temporal_info = hist_len;
 }
 
-// src:
-// Edge-avoiding À-trous https://jo.dreggn.org/home/2010_atrous.pdf
-// svgf (impl without variance) https://research.nvidia.com/sites/default/files/pubs/2017-07_Spatiotemporal-Variance-Guided-Filtering%3A//svgf_preprint.pdf
-//     shadertoy: https://www.shadertoy.com/view/tlXfRX
+// Edge-avoiding À-trous: https://jo.dreggn.org/home/2010_atrous.pdf
+// svgf (impl without variance): https://research.nvidia.com/sites/default/files/pubs/2017-07_Spatiotemporal-Variance-Guided-Filtering%3A//svgf_preprint.pdf
+//     referenced: https://www.shadertoy.com/view/tlXfRX
 void PS_Blur1(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
     out float4 color : SV_Target0
