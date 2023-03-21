@@ -15,6 +15,7 @@
     x use that blue noise somehow
     X bitmask il
     o licence sanitization
+    - dx9 check to toggle bit ops
 */
 
 #include "ReShade.fxh"
@@ -405,7 +406,7 @@ bool isInScreen(float2 uv){return all(uv > 0) && all(uv < 1);}
 
 float3 fakeAlbedo(float3 color)
 {
-    float3 albedo = pow(color, fAlbedoSatPower * length(color));
+    float3 albedo = pow(color, fAlbedoSatPower * length(color));  // length(color) suppress saturation of darker colors
     albedo = saturate(lerp(albedo, normalize(albedo), fAlbedoNorm));
     return albedo;
 }
@@ -529,10 +530,9 @@ float3 fireflyRejectionVariance(float3 radiance, float3 variance, float3 mean)
     return min(radiance, high_thres);
 }
 
-// src:
-// Edge-avoiding À-trous https://jo.dreggn.org/home/2010_atrous.pdf
-// svgf (impl without variance) https://research.nvidia.com/sites/default/files/pubs/2017-07_Spatiotemporal-Variance-Guided-Filtering%3A//svgf_preprint.pdf
-//     shadertoy: https://www.shadertoy.com/view/tlXfRX
+// algo: Edge-avoiding À-trous https://jo.dreggn.org/home/2010_atrous.pdf
+//     svgf (impl without variance) https://research.nvidia.com/sites/default/files/pubs/2017-07_Spatiotemporal-Variance-Guided-Filtering%3A//svgf_preprint.pdf
+// referenced: https://www.shadertoy.com/view/tlXfRX
 float4 atrous(sampler samp, float2 uv, float radius)
 {
     float4 gi_curr = tex2D(samp, uv);
@@ -550,10 +550,10 @@ float4 atrous(sampler samp, float2 uv, float radius)
         float4 g_sample = tex2D(samp_g, uv_sample);
         float4 gi_sample = tex2D(samp, uv_sample);
 
-        float w = pow(max(0, dot(g_curr.xyz, g_sample.xyz)), 64);                                // normal
+        float w = pow(max(0, dot(g_curr.xyz, g_sample.xyz)), 64);                                   // normal
         w *= exp(-abs(g_curr.w - g_sample.w) / (1 * abs(dot(zgrad, offset_px.xy * radius)) + EPS)); // depth
-        // w *= exp(-abs(lum_curr - lum[i]) / (fVarianceWeight * variance + EPS));  // luminance
-        w = saturate(w) * exp(-0.66 * length(offset_px)) * isInScreen(uv_sample); // gaussian kernel
+        // w *= exp(-abs(lum_curr - lum[i]) / (fVarianceWeight * variance + EPS));                     // luminance
+        w = saturate(w) * exp(-0.66 * length(offset_px)) * isInScreen(uv_sample);                   // gaussian kernel
 
         weightsum += w;
         sum += gi_sample * w;
