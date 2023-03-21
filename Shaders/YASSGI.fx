@@ -56,7 +56,7 @@ namespace YASSGI
 #endif
 
 // color space conversion matrices
-// src: https://www.colour-science.org/apps/  using CAT02
+// data src: https://www.colour-science.org/apps/  using CAT02
 static const float3x3 g_sRGBToACEScg = float3x3(
     0.613117812906440,  0.341181995855625,  0.045787344282337,
     0.069934082307513,  0.918103037508582,  0.011932775530201,
@@ -401,10 +401,7 @@ bool isFar(float z){return z > RESHADE_DEPTH_LINEARIZATION_FAR_PLANE;}
 bool isWeapon(float z){return z < linearDepthToZ(fDepthRange.x);}
 bool isSky(float z){return z > linearDepthToZ(fDepthRange.y);}
 
-bool isInScreen(float2 uv)
-{
-    return uv.x > 0.0 && uv.x < 1.0 && uv.y > 0.0 && uv.y < 1.0;
-}
+bool isInScreen(float2 uv){return all(uv > 0) && all(uv < 1);}
 
 float3 fakeAlbedo(float3 color)
 {
@@ -697,10 +694,9 @@ void PS_Accumulation(
     // float3 color_curr = tex2D(samp_color, uv).rgb;
     // float3 color_prev = tex2D(samp_color, uv_prev).rgb;
 
-    // z & normal disocclusion
+    // disocclusion
     float z_delta = abs(g_curr.w - g_prev.w) / g_curr.w / max(fFrameTime, 1.0);
     float delta = z_delta * abs(dot(g_curr.xyz, normalize(uvToViewSpace(uv, g_curr.w))));  // Geometry
-    // delta += length(fakeAlbedo(color_prev) - fakeAlbedo(color_curr)) * 0.05;
     bool occluded = delta > fDisocclThres * 0.01;
 
     float hist_len_new = min(hist_len_prev * (!occluded) + 1, iMaxAccumFrames);
@@ -713,7 +709,7 @@ void PS_Accumulation(
 
 // orig src (missing the latter parts): https://alain.xyz/blog/ray-tracing-denoising
 // src: https://www.yuque.com/isumiai/cg/efwkig#Sf1rG
-// src fr: Ray Tracing Gems Chapter 25
+// algo: Ray Tracing Gems Chapter 25
 void PS_Firefly(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
     out float4 gi_ao : SV_Target0, out float temporal_info : SV_Target1
