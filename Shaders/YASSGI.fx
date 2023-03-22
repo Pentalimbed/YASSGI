@@ -778,7 +778,7 @@ void PS_Display(
         float4 albedo = tex2D(samp_color, uv);
         color.rgb = albedo.rgb;
         color.rgb += gi_ao.rgb * fIlStrength;
-        color.rgb = color.rgb * pow(saturate(1 - gi_ao.w), fAoStrength);  // okey dokey
+        color.rgb = color.rgb * exp2(-gi_ao.a * fAoStrength);
         color.rgb = saturate(mul(g_colorOutputMat, color.rgb));
     }
     else if(iViewMode == 1)  // Depth / Normal
@@ -804,14 +804,14 @@ void PS_Display(
     else if(iViewMode == 3)  // GI
     {
         color = (iFrameCount / 300) % 2 ?
-            pow(saturate(1 - tex2D(samp_gi_ao, uv).w), fAoStrength) :
-            mul(g_colorOutputMat, tex2D(samp_gi_ao, uv).xyz * fIlStrength);
+            exp2(-tex2D(samp_gi_ao, uv).a * fAoStrength) :
+            mul(g_colorOutputMat, tex2D(samp_gi_ao, uv).rgb * fIlStrength);
     }
     else if(iViewMode == 4)  // GI Accum
     {
         color = (iFrameCount / 300) % 2 ?
-            pow(saturate(1 - tex2D(samp_gi_ao_accum, uv).w), fAoStrength) :
-            mul(g_colorOutputMat, tex2D(samp_gi_ao_accum, uv).xyz * fIlStrength);
+            exp2(-tex2D(samp_gi_ao_accum_1, uv).a * fAoStrength) :
+            mul(g_colorOutputMat, tex2D(samp_gi_ao_accum, uv).rgb * fIlStrength);
     }
     else if(iViewMode == 5)  // Accum speed
     {

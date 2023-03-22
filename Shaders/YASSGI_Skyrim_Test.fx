@@ -420,7 +420,7 @@ void PS_GI(
             float dist_px = stride_px;
             float hor_cos = min_hor_cos;
             [loop]
-            while(dist_px < max_dist && step < 64)
+            while(dist_px < max_dist && step < 64)  // preventing infinite loop when you tweak params in ReShade
             {
                 float4 rand_2 = pcg4d(uint4(idx_dir, side, step, rand.z)) / MAX_UINT_F;
 
@@ -457,7 +457,7 @@ void PS_Display(
     out float4 color : SV_Target)
 {
     color = tex2D(ReShade::BackBuffer, uv);
-    float4 gi_ao = tex2Dlod(samp_gi_ao, float4(uv, 2, 0));
+    float4 gi_ao = tex2Dlod(samp_gi_ao, float4(uv, 2, 0));  // good enough w/ vanilla TAA!
     
     if(iViewMode == 0)  // None
     {
