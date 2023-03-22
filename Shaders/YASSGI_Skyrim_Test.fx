@@ -14,6 +14,9 @@
     - bent normal
     - thickness heuristic
     - alternative bitmask impl (?)
+    - hi-z buffer w/ cone tracing
+        (guess that's what Sannikov means when they refer to "cone tracing" and all that integral math,
+         and his stride is tied to slice angle somehow, probably to sample the whole mipmap px)
 */
 
 #include "ReShade.fxh"
