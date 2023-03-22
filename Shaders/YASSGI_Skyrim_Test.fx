@@ -3,7 +3,7 @@
     Redistribution of source material are maked with <src>,
     with a copy of its license appended if it demands so.
 
-    All other code shall be considered liscenced under UNLICENSE,
+    All other code shall be considered licensed under UNLICENSE,
     either as (re)implementation of their source materials,
     or as the author's original work.
 
@@ -128,6 +128,10 @@ namespace YASSGI_SKYRIM
 
 #define INTERLEAVED_SIZE_PX 4
 #define MAX_MIP 8
+
+#ifndef YASSGI_PREBLUR_SCALE
+#   define YASSGI_PREBLUR_SCALE 0.25
+#endif
 
 static const float3x3 g_sRGBToACEScg = float3x3(
     0.613117812906440,  0.341181995855625,  0.045787344282337,
@@ -294,10 +298,10 @@ sampler samp_blue                              {Texture = tex_blue; AddressU = R
 // downscaled normal (RGB) raw_z (A)
 // tbf orig paper uses interleaved buffers (not blurred) but no sampler spamming for dx9.
 //                                          (or perhaps a separate shader(s) for those?)
-texture tex_blur_normal_z  {Width = BUFFER_WIDTH / INTERLEAVED_SIZE_PX; Height = BUFFER_HEIGHT / INTERLEAVED_SIZE_PX; Format = RGBA32F; MipLevels = MAX_MIP;};
+texture tex_blur_normal_z  {Width = BUFFER_WIDTH * YASSGI_PREBLUR_SCALE; Height = BUFFER_HEIGHT * YASSGI_PREBLUR_SCALE; Format = RGBA32F; MipLevels = MAX_MIP;};
 sampler samp_blur_normal_z {Texture = tex_blur_normal_z;};
 
-texture tex_blur_color  {Width = BUFFER_WIDTH / INTERLEAVED_SIZE_PX; Height = BUFFER_HEIGHT / INTERLEAVED_SIZE_PX; Format = RGBA16F; MipLevels = MAX_MIP;};
+texture tex_blur_color  {Width = BUFFER_WIDTH * YASSGI_PREBLUR_SCALE; Height = BUFFER_HEIGHT * YASSGI_PREBLUR_SCALE; Format = RGBA16F; MipLevels = MAX_MIP;};
 sampler samp_blur_color {Texture = tex_blur_color;};
 
 texture tex_bent_normal  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F;};
@@ -440,7 +444,7 @@ void PS_PreBlur(
     for(uint i = 0; i < 8; ++i)
     {
         float2 offset_px; sincos(i * 0.25 * PI, offset_px.y, offset_px.x);  // <-sincos here!
-        const float2 offset_uv = offset_px * INTERLEAVED_SIZE_PX * 0.5 * float2(BUFFER_RCP_WIDTH, BUFFER_RCP_HEIGHT);
+        const float2 offset_uv = offset_px / YASSGI_PREBLUR_SCALE * 0.5 * float2(BUFFER_RCP_WIDTH, BUFFER_RCP_HEIGHT);
         const float2 uv_sample = uv + offset_uv;
 
         const float w = exp(-0.66 * length(offset_px)) * isInScreen(uv_sample);
@@ -555,6 +559,7 @@ void PS_GI(
                     hor_cos = lerp(max(hor_cos, hor_cos_sample), hor_cos_sample, fThinOccluderCompensation);  // use em both!
 
                     float3 color_sample = tex2Dlod(samp_blur_color, float4(uv_sample, mip_level, 0)).rgb;
+                    // gi_ao.rgb = color_sample;
                 }
 
                 dist_px += stride_px * exp2((step + distrib.y) * fSpreadExp);
