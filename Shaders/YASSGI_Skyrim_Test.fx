@@ -54,6 +54,7 @@
                 calculation of horizon based indirect light
     Legit Engine. Alexander "Raikiri" Sannikov.
         url:    https://github.com/Raikiri/LegitEngine
+                multiple of their youtube videos and comments
         credit: the idea of doing interleaved sampling on blurred z/color buffers in a single pass
 */
 /*  NOTATION
