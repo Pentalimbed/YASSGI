@@ -225,7 +225,7 @@ uniform float fAoRange <
     ui_label = "AO Range";
     ui_min = 0; ui_max = 100.0;
     ui_step = 0.1;
-> = 50.0;
+> = 30.0;
 
 uniform float fAoFalloff <
     ui_type = "slider";
@@ -233,7 +233,7 @@ uniform float fAoFalloff <
     ui_label = "AO Falloff";
     ui_min = 0; ui_max = 1.0;
     ui_step = 0.001;
-> = 0.0;
+> = 0.4;
 
 uniform float fThinOccluderCompensation <
     ui_type = "slider";
@@ -241,7 +241,7 @@ uniform float fThinOccluderCompensation <
     ui_label = "Thin Obj Compensation";
     ui_min = 0; ui_max = 0.7;
     ui_step = 0.01;
-> = 0.2;
+> = 0.5;
 
 uniform float fIlStrength <
     ui_type = "slider";
@@ -255,10 +255,10 @@ uniform float fAoStrength <
     ui_type = "slider";
     ui_category = "Mixing";
     ui_label = "AO";
-    ui_tooltip = "Negative value for a non-physical-accurate exponential mixing.";
+    ui_tooltip = "Negative value for non-physical-accurate exponential mixing.";
     ui_min = -3.0; ui_max = 1.0;
     ui_step = 0.01;
-> = 1.0;
+> = -1.5;
 
 }
 
