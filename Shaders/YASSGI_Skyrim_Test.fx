@@ -1,12 +1,15 @@
-/*  REFERENCES
+/*  REFERENCES & CREDITS
     
-    Direct redistribution of source code are maked with <src>,
+    Direct redistribution of source material are maked with <src>,
     appended with a copy of its license if it demands so.
 
     All other code shall be considered liscenced under UNLICENSE,
     either as (re)implementation of their source materials,
     or as the author's original work.
 
+    Free blue noise textures. Christoph Peters.
+        url:    http://momentsingraphics.de/BlueNoise.html
+        credit: blue noise texture. <src>
     RGB COLOURSPACE TRANSFORMATION MATRIX. Colour Developers.
         url:    https://www.colour-science.org/apps/
         credit: ACEScg <-> sRGB conversion matrices
@@ -50,12 +53,12 @@
         credit: details of GTAO implementation
     Horizon-Based Indirect Lighting. Benoît "Patapom" Mayaux.
         url:    https://github.com/Patapom/GodComplex/blob/master/Tests/TestHBIL/2018%20Mayaux%20-%20Horizon-Based%20Indirect%20Lighting%20(HBIL).pdf
-        credit: using interleaved rendering
+        credit: interleaved sampling
                 calculation of horizon based indirect light
     Legit Engine. Alexander "Raikiri" Sannikov.
         url:    https://github.com/Raikiri/LegitEngine
                 multiple of their youtube videos and comments
-        credit: the idea of doing interleaved sampling on blurred z/color buffers in a single pass
+        credit: the idea of doing interleaved sampling on a single blurred z/color buffers in a single pass
 */
 /*  NOTATION
 
@@ -238,6 +241,9 @@ sampler samp_blur_normal_z {Texture = tex_blur_normal_z;};
 texture tex_blur_color  {Width = BUFFER_WIDTH / INTERLEAVED_SIZE_PX; Height = BUFFER_HEIGHT / INTERLEAVED_SIZE_PX; Format = RGBA16F; MipLevels = MAX_MIP;};
 sampler samp_blur_color {Texture = tex_blur_color;};
 
+texture tex_bent_normal  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F;};
+sampler samp_bent_normal {Texture = tex_bent_normal;};
+
 texture tex_gi_ao  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 2;};
 sampler samp_gi_ao {Texture = tex_gi_ao;};
 
@@ -382,12 +388,13 @@ void PS_PreBlur(
 
 void PS_GI(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
-    out float4 gi_ao : SV_Target0
+    out float4 gi_ao : SV_Target0, out float4 normal_bent : SV_Target1
 )
 {
     float4 temp = 0;  // temp vec for debug
 
     gi_ao = 0;
+    normal_bent = 0;
 
     const uint2 px_coord = uv * BUFFER_SIZE;
 
@@ -436,8 +443,10 @@ void PS_GI(
         const float n = sign_n * acosFast4(cos_n);
         const float sin_n = sin(n);
         
+        // Algorithm 1 in the GTAO paper
         // 0 for -dir_px_slice, 1 for +dir_px_slice
         const float2 dists = intersectBox(px_coord, dir_px_slice, float4(0, 0, BUFFER_SIZE)).y;
+        float h0, h1;
         [unroll]
         for(uint side = 0; side <= 1; ++side)
         {
@@ -469,14 +478,28 @@ void PS_GI(
                 ++step;  // 2 same stride at the start. more precise perhaps (?)
             }
 
-            const float angle_hor = n + clamp(side_sign * acosFast4(hor_cos) -n, -HALF_PI, HALF_PI);
+            const float h = acosFast4(hor_cos);
+            const float angle_hor = n + clamp(side_sign * h - n, -HALF_PI, HALF_PI);  // XeGTAO suggested skipping clamping. Hmmm...
             sum.w += length(normal_proj) * 0.25 * (cos_n + 2 * angle_hor * sin_n - cos(2 * angle_hor - n));
+            
+            side ? h1 : h0 = h;
         }
+
+        // bent normal (Algorithm 2)
+        float t0 = (6 * sin(h0 - n) - sin(3 * h0 - n) +
+                    6 * sin(h1 - n) - sin(3 * h1 - n) + 
+                    16 * sin(n) - 3 * (sin(h0 + n) + sin(h1 + n))) * 0.083333333333333333333;  // rcp 12
+        float t1 = (-cos(3 * h0 - n) - cos(3 * h1 - n) +
+                    8 * cos(n) - 3 * (cos(h0 + n) +cos(h1 + n))) * 0.083333333333333333333;
+        float3 normal_bent_local = float3(dir_px_slice * t0, -t1);
+        normal_bent.rgb += normal_bent_local;
     }
 
-    temp = abs(rawZToLinear01(raw_z) * fFarPlane - pos_v.z);
+    temp = normal_bent.xyz * 0.5 + 0.5;
 
-    gi_ao.w = saturate(1 - sum.w / iDirCount);
+    normal_bent.xyz = normalize(normal_bent.xyz);
+    normal_bent.w = 1;
+    gi_ao.w = clamp(1 - sum.w / iDirCount, 0.03, 1);  // got -inf here...
     // gi_ao = temp;
 }
 
@@ -485,7 +508,7 @@ void PS_Display(
     out float4 color : SV_Target)
 {
     color = tex2D(ReShade::BackBuffer, uv);
-    float4 gi_ao = tex2Dlod(samp_gi_ao, float4(uv, 2, 0));  // no need for any filter, 3 slices and it's good enough w/ vanilla TAA!
+    float4 gi_ao = tex2Dlod(samp_gi_ao, float4(uv, 2, 0));  // no need for any filter, 3 slices and it's good enough w/ vanilla TAA
     
     if(iViewMode == 0)  // None
     {
@@ -512,6 +535,7 @@ technique YASSGI_TEST
         VertexShader = PostProcessVS;
         PixelShader = PS_GI;
         RenderTarget0 = tex_gi_ao;
+        RenderTarget1 = tex_bent_normal;
     }
     pass {
         VertexShader = PostProcessVS;

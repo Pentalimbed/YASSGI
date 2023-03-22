@@ -678,8 +678,7 @@ void PS_Accumulation(
     // ^^^ to NV: not src!
     float z_delta = abs(g_curr.w - g_prev.w) / g_curr.w / max(fFrameTime, 1.0);  // depth and frame interval weighted
     float delta = z_delta * abs(dot(g_curr.xyz, normalize(uvToViewSpace(uv, g_curr.w))));  // geometry: compare deviation of plane instead of point
-    // can't tweak the params for a smooth transition from valid to disoccluded, so just discard
-    // à la à-trous/svgf
+    // can't tweak the params for a smooth transition from valid to disoccluded, so just discard à la à-trous/svgf
     bool occluded = delta > fDisocclThres * 0.01;
     
     float hist_len_new = min(hist_len_prev * (!occluded) + 1, iMaxAccumFrames);
