@@ -1,9 +1,9 @@
 /*  REFERENCES
     
     Direct redistribution of source code are maked with <src>,
-    appended with its license if it demands.
+    appended with a copy of its license if it demands so.
 
-    All other code shall be considered unliscenced by UNLICENSE,
+    All other code shall be considered liscenced under UNLICENSE,
     either as (re)implementation of their source materials,
     or as the author's original work.
 
