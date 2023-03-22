@@ -1,4 +1,63 @@
-/*
+/*  REFERENCES
+    
+    Direct redistribution of source code are maked with <src>,
+    appended with its license if it demands.
+
+    All other code shall be considered unliscenced by UNLICENSE,
+    either as (re)implementation of their source materials,
+    or as the author's original work.
+
+    RGB COLOURSPACE TRANSFORMATION MATRIX. Colour Developers.
+        url:    https://www.colour-science.org/apps/
+        credit: ACEScg <-> sRGB conversion matrices
+    Physically Based Rendering. Matt Pharr, Wenzel Jakob, and Greg Humphreys.
+        url:    https://www.pbr-book.org/3ed-2018/Sampling_and_Reconstruction/The_Halton_Sampler
+        credit: radicalInverse & hammersly function <src>
+        license:
+            Copyright (c) 1998-2015, Matt Pharr, Greg Humphreys, and Wenzel Jakob.
+
+            All rights reserved.
+
+            Redistribution and use in source and binary forms, with or without
+            modification, are permitted provided that the following conditions are met:
+
+            1. Redistributions of source code must retain the above copyright notice, this
+            list of conditions and the following disclaimer.
+
+            2. Redistributions in binary form must reproduce the above copyright notice,
+            this list of conditions and the following disclaimer in the documentation
+            and/or other materials provided with the distribution.
+
+            THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+            AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+            IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+            DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+            FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+            DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+            SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+            CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+            OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+            OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+    Hash Functions for GPU Rendering. Mark Jarzynski, Marc Olano, and UMBC.
+        url:    http://www.jcgt.org/published/0009/03/02/
+                https://www.shadertoy.com/view/XlGcRh
+        credit: pcg3d & pcg4d function <src>
+    Practical Realtime Strategies for Accurate Indirect Occlusion. Jorge Jimenez, Xian-Chun Wu, Angelo Pesce, and Adrian Jarabo.
+        url:    https://www.activision.com/cdn/research/Practical_Real_Time_Strategies_for_Accurate_Indirect_Occlusion_NEW%20VERSION_COLOR.pdf
+        credit: GTAO algorithm
+    XeGTAO. Intel Corporation.
+        url:    https://github.com/GameTechDev/XeGTAO
+        credit: details of GTAO implementation
+    Horizon-Based Indirect Lighting. Benoît "Patapom" Mayaux.
+        url:    https://github.com/Patapom/GodComplex/blob/master/Tests/TestHBIL/2018%20Mayaux%20-%20Horizon-Based%20Indirect%20Lighting%20(HBIL).pdf
+        credit: using interleaved rendering
+                calculation of horizon based indirect light
+    Legit Engine. Alexander "Raikiri" Sannikov.
+        url:    https://github.com/Raikiri/LegitEngine
+        credit: the idea of doing interleaved sampling on blurred z/color buffers in a single pass
+*/
+/*  NOTATION
+
     raw_z: raw z
     depth: linearized z (0-1)
     z: linearized z
@@ -7,9 +66,10 @@
     normal: pointing outwards
     color & gi: ACEScg
     pos_v: view
+    angle: radian
 */
-
 /*  TODO
+
     - il
     - bent normal
     - thickness heuristic
@@ -38,8 +98,6 @@ namespace YASSGI_SKYRIM_TEST
 #define INTERLEAVED_SIZE_PX 4
 #define MAX_MIP 8
 
-// color space conversion matrices
-// src: https://www.colour-science.org/apps/  using CAT02
 static const float3x3 g_sRGBToACEScg = float3x3(
     0.613117812906440,  0.341181995855625,  0.045787344282337,
     0.069934082307513,  0.918103037508582,  0.011932775530201,
@@ -258,7 +316,6 @@ bool isSky(float z){return z > fZRange.y;}
 
 // <---- Sampling ---->
 
-// algo: https://www.pbr-book.org/3ed-2018/Sampling_and_Reconstruction/The_Halton_Sampler
 float radicalInverse(uint i)
 {
     uint bits = (i << 16u) | (i >> 16u);
@@ -270,12 +327,6 @@ float radicalInverse(uint i)
 }
 float2 hammersley(uint i, uint N) {return float2(float(i) / N, radicalInverse(i));}
 
-/*
-    Source:
-    Hash Functions for GPU Rendering 
-        http://www.jcgt.org/published/0009/03/02/
-        https://www.shadertoy.com/view/XlGcRh
-*/
 uint3 pcg3d(uint3 v) {
 
     v = v * 1664525u + 1013904223u;
@@ -311,14 +362,6 @@ uint4 pcg4d(uint4 v)
     return v;
 }
 
-
-/*
-    Reference:
-    LegitEngine
-        https://github.com/Raikiri/LegitEngine
-    
-    No source code included
-*/
 void PS_PreBlur(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
     out float4 blur_normal_z : SV_Target0, out float4 blur_color : SV_Target1
@@ -345,16 +388,6 @@ void PS_PreBlur(
     blur_color = float4(sum_color / sum_w, 1);
 }
 
-
-/*  
-    Reference:
-    Horizon-Based Indirect Lighting
-        https://github.com/Patapom/GodComplex/blob/master/Tests/TestHBIL/2018%20Mayaux%20-%20Horizon-Based%20Indirect%20Lighting%20(HBIL).pdf
-    LegitEngine
-        https://github.com/Raikiri/LegitEngine
-    XeGTAO
-        https://github.com/GameTechDev/XeGTAO/tree/master
-*/
 void PS_GI(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
     out float4 gi_ao : SV_Target0
