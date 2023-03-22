@@ -129,6 +129,15 @@ namespace YASSGI_SKYRIM
 #define INTERLEAVED_SIZE_PX 4
 #define MAX_MIP 8
 
+#ifndef YASSGI_HALFRES
+#   define YASSGI_HALFRES 0
+#endif
+#if YASSGI_HALFRES
+#   define YASSGI_RESSCALE 0.5
+#else
+#   define YASSGI_RESSCALE 1
+#endif
+
 static const float3x3 g_sRGBToACEScg = float3x3(
     0.613117812906440,  0.341181995855625,  0.045787344282337,
     0.069934082307513,  0.918103037508582,  0.011932775530201,
@@ -300,17 +309,17 @@ sampler samp_blur_normal_z {Texture = tex_blur_normal_z;};
 texture tex_blur_color  {Width = BUFFER_WIDTH / INTERLEAVED_SIZE_PX; Height = BUFFER_HEIGHT / INTERLEAVED_SIZE_PX; Format = RGBA16F; MipLevels = MAX_MIP;};
 sampler samp_blur_color {Texture = tex_blur_color;};
 
-texture tex_bent_normal  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F;};
+texture tex_bent_normal  {Width = BUFFER_WIDTH * YASSGI_RESSCALE; Height = BUFFER_HEIGHT * YASSGI_RESSCALE; Format = RGBA16F;};
 sampler samp_bent_normal {Texture = tex_bent_normal;};
 
-texture tex_gi_ao  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 2;};
+texture tex_gi_ao  {Width = BUFFER_WIDTH * YASSGI_RESSCALE; Height = BUFFER_HEIGHT * YASSGI_RESSCALE; Format = RGBA16F; MipLevels = 2;};
 sampler samp_gi_ao {Texture = tex_gi_ao;};
 
-texture tex_gi_ao_blur1  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 2;};
-sampler samp_gi_ao_blur1 {Texture = tex_gi_ao_blur1;};
+// texture tex_gi_ao_blur1  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 2;};
+// sampler samp_gi_ao_blur1 {Texture = tex_gi_ao_blur1;};
 
-texture tex_gi_ao_blur2  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 2;};
-sampler samp_gi_ao_blur2 {Texture = tex_gi_ao_blur2;};
+// texture tex_gi_ao_blur2  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 2;};
+// sampler samp_gi_ao_blur2 {Texture = tex_gi_ao_blur2;};
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Functions
@@ -463,10 +472,10 @@ void PS_GI(
     gi_ao = 0;
     normal_bent = 0;
 
-    const uint2 px_coord = uv * BUFFER_SIZE;
+    const uint2 px_coord = uv * BUFFER_SIZE * YASSGI_RESSCALE;
 
-    const float3 normal_v = unpackNormal(tex2Dfetch(Skyrim::samp_normal, px_coord).xy);
-    const float raw_z = tex2Dfetch(Skyrim::samp_depth, px_coord).x;
+    const float3 normal_v = unpackNormal(tex2D(Skyrim::samp_normal, uv).xy);
+    const float raw_z = tex2D(Skyrim::samp_depth, uv).x;
     const float3 pos_v = uvzToView(uv, raw_z) * 0.99995;  // closer to the screen bc we're using blurred geometry
     const float3 dir_v_view = -normalize(pos_v);
 
@@ -480,18 +489,18 @@ void PS_GI(
         px_idx % (INTERLEAVED_SIZE_PX * INTERLEAVED_SIZE_PX),
         INTERLEAVED_SIZE_PX * INTERLEAVED_SIZE_PX);
     // ^^^ x for angle, y for stride
-    const uint block_idx = dot(px_idx / INTERLEAVED_SIZE_PX, uint2(BUFFER_WIDTH / INTERLEAVED_SIZE_PX, 1));  // use block id bc essentially a block is a whole unit
+    const uint block_idx = dot(px_idx / INTERLEAVED_SIZE_PX, uint2(BUFFER_WIDTH * YASSGI_RESSCALE / INTERLEAVED_SIZE_PX, 1));  // use block id bc essentially a block is a whole unit
     const uint3 rand = pcg3d(uint3(block_idx, 0, iFrameCount));
     float4 blue_noise = tex2Dfetch(samp_blue, (px_coord + rand.xy) % NOISE_SIZE);
 
     // some consts
     const float rcp_dir_count = 1.0 / iDirCount;
     const float angle_sector = PI * rcp_dir_count;  // may confuse with bitmask il sectors; angle_increment? angle_pizza_slice?
-    const float stride_px = max(1, fBaseStridePx + fBaseStridePx * (distrib.y - 0.5 + (blue_noise.x - 0.5) * fJitterScale) * 0.5);
+    const float stride_px = max(1, fBaseStridePx + fBaseStridePx * (distrib.y - 0.5 + (blue_noise.x - 0.5) * fJitterScale) * 0.5) * YASSGI_RESSCALE;
     const float log2_stride_px = log2(stride_px);
-    const float falloff_start_px = fAoRange * (1 - fAoFalloff);
+    const float falloff_start = fAoRange * (1 - fAoFalloff);
     const float falloff_mul = -rcp(fAoRange);
-    const float falloff_add = falloff_start_px / fAoFalloff + 1;
+    const float falloff_add = falloff_start / fAoFalloff + 1;
 
     // per slice
     float4 sum = 0;
@@ -501,7 +510,7 @@ void PS_GI(
         // slice directions
         const float angle_slice = (idx_dir + distrib.x + (blue_noise.y - 0.5) * fJitterScale) * angle_sector;
         float2 dir_px_slice; sincos(angle_slice, dir_px_slice.y, dir_px_slice.x);  // <-sincos here!
-        const float2 dir_uv_slice = normalize(dir_px_slice * float2(BUFFER_WIDTH * BUFFER_RCP_HEIGHT, 1));
+        const float2 dir_uv_slice = normalize(dir_px_slice * float2(BUFFER_WIDTH * BUFFER_RCP_HEIGHT, 1) / YASSGI_RESSCALE);
 
         const float3 dir_v_slice_screen = float3(dir_px_slice.x, dir_px_slice.y, 0);
         const float3 dir_v_slice_local = projectToPlane(dir_v_slice_screen, dir_v_view);
@@ -515,13 +524,13 @@ void PS_GI(
         
         // Algorithm 1 in the GTAO paper
         // 0 for -dir_px_slice, 1 for +dir_px_slice
-        const float2 dists = intersectBox(px_coord, dir_px_slice, float4(0, 0, BUFFER_SIZE)).y;
+        const float2 dists = intersectBox(px_coord, dir_px_slice, float4(0, 0, BUFFER_SIZE * YASSGI_RESSCALE)).y;
         float h0, h1;
         [unroll]
         for(uint side = 0; side <= 1; ++side)
         {
             const int side_sign = side * 2 - 1;
-            const float max_dist = min(fMaxAoSampleDistPx, side ? dists.y : abs(dists.x));
+            const float max_dist = min(fMaxAoSampleDistPx * YASSGI_RESSCALE, side ? dists.y : abs(dists.x));
             const float min_hor_cos = cos(n + side_sign * HALF_PI);
 
             // marching
@@ -533,7 +542,7 @@ void PS_GI(
             {
                 const float2 offset_px = dir_px_slice * dist_px;
                 const float2 px_coord_sample = px_coord + side_sign * offset_px;
-                const float2 uv_sample = (px_coord_sample + 0.5) * float2(BUFFER_RCP_WIDTH, BUFFER_RCP_HEIGHT);
+                const float2 uv_sample = (px_coord_sample + 0.5) * float2(BUFFER_RCP_WIDTH, BUFFER_RCP_HEIGHT) / YASSGI_RESSCALE;
 
                 const uint mip_level = clamp(log2(dist_px) - log2_stride_px, 0, MAX_MIP);
 
