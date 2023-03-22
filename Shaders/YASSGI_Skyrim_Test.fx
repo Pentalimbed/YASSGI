@@ -96,6 +96,8 @@ namespace YASSGI_SKYRIM_TEST
 
 #define BUFFER_SIZE uint2(BUFFER_WIDTH, BUFFER_HEIGHT)
 
+#define NOISE_SIZE 256
+
 #define INTERLEAVED_SIZE_PX 4
 #define MAX_MIP 8
 
@@ -150,8 +152,8 @@ uniform uint iDirCount <
     ui_type = "slider";
     ui_category = "Sampling";
     ui_label = "Slices";
-    ui_min = 1; ui_max = 4;
-> = 1;  
+    ui_min = 1; ui_max = 6;
+> = 3;  
 
 uniform float fBaseStridePx <
     ui_type = "slider";
@@ -159,7 +161,7 @@ uniform float fBaseStridePx <
     ui_label = "Base Stride (px)";
     ui_min = 1; ui_max = 64;
     ui_step = 1;
-> = 4;
+> = 16;
 
 uniform float fSpreadExp <
     ui_type = "slider";
@@ -167,7 +169,7 @@ uniform float fSpreadExp <
     ui_label = "Spread Exponent";
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
-> = 0.5;
+> = 0.7;
 
 // Separate AO and IL perhaps
 uniform float fMaxDistPx <
@@ -176,7 +178,7 @@ uniform float fMaxDistPx <
     ui_label = "Max Distance (px)";
     ui_min = 2; ui_max = BUFFER_WIDTH;
     ui_step = 1;
-> = 200;
+> = 150;
 
 uniform float fSampleRangePx <
     ui_type = "slider";
@@ -184,23 +186,15 @@ uniform float fSampleRangePx <
     ui_label = "LOD Range (px)";
     ui_min = 2; ui_max = 64;
     ui_step = 1;
-> = 8;
-
-uniform uint iBlurSamples <
-    ui_type = "slider";
-    ui_category = "Filter";
-    ui_label = "Blur Samples";
-    ui_min = 0; ui_max = 64;
-    ui_step = 1;
 > = 32;
 
-uniform uint iBlurLOD <
+uniform float fJitterScale <
     ui_type = "slider";
-    ui_category = "Filter";
-    ui_label = "Blur LOD";
-    ui_min = 0; ui_max = MAX_MIP - 1;
-    ui_step = 1;
-> = 2;
+    ui_category = "Sampling";
+    ui_label = "Jitter Scale";
+    ui_min = 0; ui_max = 2;
+    ui_step = 0.01;
+> = 1.0;
 
 uniform float fIlStrength <
     ui_type = "slider";
@@ -216,7 +210,7 @@ uniform float fAoStrength <
     ui_label = "AO";
     ui_min = 0.0; ui_max = 4.0;
     ui_step = 0.01;
-> = 1.0;
+> = 2.0;
 
 }
 
@@ -227,16 +221,13 @@ sampler samp_normal { Texture = tex_normal; };
 
 texture tex_depth : TARGET_MAIN_DEPTH;
 sampler samp_depth { Texture = tex_depth; };
-
-texture tex_motion_vector : MOTION_VECTOR;
-sampler samp_motion_vector { Texture = tex_motion_vector; };
-
-texture tex_cubemap : REFLECTIONS;
-sampler samp_cubemap { Texture = tex_cubemap; };
 }
 
 namespace YASSGI_SKYRIM_TEST
 {
+texture tex_blue <source = "YASSGI_bleu.png";> {Width = NOISE_SIZE; Height = NOISE_SIZE; Format = RGBA8;};
+sampler samp_blue                              {Texture = tex_blue; AddressU = REPEAT; AddressV = REPEAT; AddressW = REPEAT;};
+
 // downscaled normal (RGB) raw_z (A)
 // blurred normal only used for rough backface verification as in the hbil paper.
 // tbf orig paper uses interleaved buffers (not blurred) but no sampler spamming for dx9.
@@ -394,17 +385,15 @@ void PS_GI(
     out float4 gi_ao : SV_Target0
 )
 {
-    // float4 temp = 0;  // temp vec for debug
+    float4 temp = 0;  // temp vec for debug
 
     gi_ao = 0;
 
-    const float3 rand = pcg3d(uint3(uv * BUFFER_SIZE, iFrameCount)) / MAX_UINT_F;
-
     const uint2 px_coord = uv * BUFFER_SIZE;
-    
-    float3 normal_v = unpackNormal(tex2Dfetch(Skyrim::samp_normal, px_coord).xy);
+
+    const float3 normal_v = unpackNormal(tex2Dfetch(Skyrim::samp_normal, px_coord).xy);
     const float raw_z = tex2Dfetch(Skyrim::samp_depth, px_coord).x;
-    const float3 pos_v = uvzToView(uv, raw_z) * 0.9995;  // closer to the screen bc we're using blurred geometry
+    const float3 pos_v = uvzToView(uv, raw_z) * 0.99995;  // closer to the screen bc we're using blurred geometry
     const float3 dir_v_view = -normalize(pos_v);
 
     [branch]
@@ -412,15 +401,19 @@ void PS_GI(
         return;
 
     // interleaved sampling
+    const uint px_idx = px_coord.x + px_coord.y * INTERLEAVED_SIZE_PX;
     const float2 distrib = hammersley(
-        dot(px_coord % INTERLEAVED_SIZE_PX, uint2(1, INTERLEAVED_SIZE_PX)),
+        px_idx % (INTERLEAVED_SIZE_PX * INTERLEAVED_SIZE_PX),
         INTERLEAVED_SIZE_PX * INTERLEAVED_SIZE_PX);
     // ^^^ x for angle, y for stride
+    const uint block_idx = dot(px_idx / INTERLEAVED_SIZE_PX, uint2(BUFFER_WIDTH / INTERLEAVED_SIZE_PX, 1));  // use block id bc essentially a block is a whole unit
+    const uint3 rand = pcg3d(uint3(block_idx, 0, iFrameCount));
+    float4 blue_noise = tex2Dfetch(samp_blue, (px_coord + rand.xy) % NOISE_SIZE);
 
     // some consts
     const float rcp_dir_count = 1.0 / iDirCount;
-    const float angle_sector = 2.0 * PI * rcp_dir_count;  // may confuse with bitmask il sectors; angle_increment? angle_pizza_slice?
-    const float stride_px = max(1, fBaseStridePx + fBaseStridePx * (distrib.y + rand.x - 1) * 0.7);
+    const float angle_sector = PI * rcp_dir_count;  // may confuse with bitmask il sectors; angle_increment? angle_pizza_slice?
+    const float stride_px = max(1, fBaseStridePx + fBaseStridePx * (distrib.y - 0.5 + (blue_noise.x - 0.5) * fJitterScale) * 0.5);
     const float log2_stride_px = log2(stride_px);
 
     // per slice
@@ -429,7 +422,7 @@ void PS_GI(
     for(uint idx_dir = 0; idx_dir < iDirCount; ++idx_dir)
     {
         // slice directions
-        const float angle_slice = (idx_dir + distrib.x + rand.y) * angle_sector;
+        const float angle_slice = (idx_dir + distrib.x + (blue_noise.y - 0.5) * fJitterScale) * angle_sector;
         float2 dir_px_slice; sincos(angle_slice, dir_px_slice.y, dir_px_slice.x);  // <-sincos here!
         const float2 dir_uv_slice = normalize(dir_px_slice * float2(BUFFER_WIDTH * BUFFER_RCP_HEIGHT, 1));
 
@@ -459,8 +452,6 @@ void PS_GI(
             [loop]
             while(dist_px < max_dist && step < 64)  // preventing infinite loop when you tweak params in ReShade
             {
-                float4 rand_2 = pcg4d(uint4(idx_dir, side, step, rand.z)) / MAX_UINT_F;
-
                 const float2 offset_px = dir_px_slice * dist_px;
                 const float2 px_coord_sample = px_coord + side_sign * offset_px;
                 const float2 uv_sample = (px_coord_sample + 0.5) * float2(BUFFER_RCP_WIDTH, BUFFER_RCP_HEIGHT);
@@ -474,7 +465,7 @@ void PS_GI(
 
                 float3 color_sample = tex2Dlod(samp_blur_color, float4(uv_sample, mip_level, 0)).rgb;
                 
-                dist_px += stride_px * (1 + (rand_2.x - 0.5)) * exp2((step + distrib.y) * fSpreadExp);
+                dist_px += stride_px * exp2((step + distrib.y) * fSpreadExp);
                 ++step;  // 2 same stride at the start. more precise perhaps (?)
             }
 
@@ -483,7 +474,7 @@ void PS_GI(
         }
     }
 
-    // temp = rawZToLinear01(raw_z) * fFarPlane - pos_v.z;
+    temp = abs(rawZToLinear01(raw_z) * fFarPlane - pos_v.z);
 
     gi_ao.w = saturate(1 - sum.w / iDirCount);
     // gi_ao = temp;
@@ -494,7 +485,7 @@ void PS_Display(
     out float4 color : SV_Target)
 {
     color = tex2D(ReShade::BackBuffer, uv);
-    float4 gi_ao = tex2Dlod(samp_gi_ao, float4(uv, 2, 0));  // good enough w/ vanilla TAA!
+    float4 gi_ao = tex2Dlod(samp_gi_ao, float4(uv, 2, 0));  // no need for any filter, 3 slices and it's good enough w/ vanilla TAA!
     
     if(iViewMode == 0)  // None
     {
