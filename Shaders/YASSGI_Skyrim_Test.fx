@@ -107,8 +107,12 @@
 #include "ReShade.fxh"
 #include "ShaderFastMathLib.h"
 
-namespace YASSGI_SKYRIM_TEST
+namespace YASSGI_SKYRIM
 {
+
+//++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+// Constants
+//++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 #define PI      3.14159265358979323846264
 #define HALF_PI 1.5707963267948966
@@ -140,6 +144,12 @@ static const float3x3 g_ACEScgToSRGB = float3x3(
 #define g_colorOutputMat g_ACEScgToSRGB
 
 
+//++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+// Uniform Varibales
+//++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+// <---- Backend ---->
+
 uniform float fFarPlane  < source = "Far"; >;
 uniform float fNearPlane < source = "Near"; >;
 
@@ -155,6 +165,7 @@ uniform int   iFrameCount < source = "FrameCount"; >;
 uniform float fTimer      < source = "TimerReal"; >;
 uniform float fFrameTime  < source = "TimingsReal"; >;
 
+// <---- UI ---->
 
 uniform float fDebug = 1;
 
@@ -170,7 +181,7 @@ uniform float2 fZRange <
     ui_label = "Weapon/Sky Z Range";
     ui_min = 0.0; ui_max = 25000;
     ui_step = 0.1;
-> = float2(0.1, 20000);
+> = float2(100, 20000);
 
 uniform uint iDirCount <
     ui_type = "slider";
@@ -262,6 +273,10 @@ uniform float fAoStrength <
 
 }
 
+//++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+// Buffers
+//++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
 namespace Skyrim
 {
 texture tex_normal : NORMAL_TAAMASK_SSRMASK;
@@ -271,7 +286,7 @@ texture tex_depth : TARGET_MAIN_DEPTH;
 sampler samp_depth { Texture = tex_depth; };
 }
 
-namespace YASSGI_SKYRIM_TEST
+namespace YASSGI_SKYRIM
 {
 texture tex_blue <source = "YASSGI_bleu.png";> {Width = NOISE_SIZE; Height = NOISE_SIZE; Format = RGBA8;};
 sampler samp_blue                              {Texture = tex_blue; AddressU = REPEAT; AddressV = REPEAT; AddressW = REPEAT;};
@@ -296,6 +311,10 @@ sampler samp_gi_ao_blur1 {Texture = tex_gi_ao_blur1;};
 
 texture tex_gi_ao_blur2  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 2;};
 sampler samp_gi_ao_blur2 {Texture = tex_gi_ao_blur2;};
+
+//++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+// Functions
+//++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 // <---- Utility ---->
 
@@ -403,6 +422,10 @@ uint4 pcg4d(uint4 v)
     
     return v;
 }
+
+//++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+// Pixel Shaders
+//++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 void PS_PreBlur(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
@@ -518,18 +541,22 @@ void PS_GI(
                 const float3 pos_v_sample = uvzToView(uv_sample, raw_z_sample);
                 const float3 offset_v = pos_v_sample - pos_v;
 
-                // thin obj heuristics
-                const float falloff = length(offset_v * float3(1, 1, 1 + fThinOccluderCompensation));
-                const float weight = saturate(falloff * falloff_mul + falloff_add);
+                [branch]
+                if(!isWeapon(pos_v_sample.z))
+                {
+                    // thin obj heuristics
+                    const float falloff = length(offset_v * float3(1, 1, 1 + fThinOccluderCompensation));
+                    const float weight = saturate(falloff * falloff_mul + falloff_add);
 
-                const float3 dir_v_hor = normalize(offset_v);
-                float hor_cos_sample = dot(dir_v_hor, dir_v_view);
-                hor_cos_sample = lerp(min_hor_cos, hor_cos_sample, weight);
-                hor_cos = max(hor_cos, hor_cos_sample);
-                hor_cos = lerp(max(hor_cos, hor_cos_sample), hor_cos_sample, fThinOccluderCompensation);  // use em both!
+                    const float3 dir_v_hor = normalize(offset_v);
+                    float hor_cos_sample = dot(dir_v_hor, dir_v_view);
+                    hor_cos_sample = lerp(min_hor_cos, hor_cos_sample, weight);
+                    hor_cos = max(hor_cos, hor_cos_sample);
+                    hor_cos = lerp(max(hor_cos, hor_cos_sample), hor_cos_sample, fThinOccluderCompensation);  // use em both!
 
-                float3 color_sample = tex2Dlod(samp_blur_color, float4(uv_sample, mip_level, 0)).rgb;
-                
+                    float3 color_sample = tex2Dlod(samp_blur_color, float4(uv_sample, mip_level, 0)).rgb;
+                }
+
                 dist_px += stride_px * exp2((step + distrib.y) * fSpreadExp);
                 ++step;  // 2 same stride at the start. more precise perhaps (?)
             }
@@ -582,7 +609,7 @@ void PS_Display(
     }
 }
 
-technique YASSGI_TEST
+technique YASSGI_Skyrim
 {
     pass {
         VertexShader = PostProcessVS;
