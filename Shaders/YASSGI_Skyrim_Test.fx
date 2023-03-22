@@ -1,7 +1,7 @@
 /*  REFERENCES & CREDITS
     
-    Direct redistribution of source material are maked with <src>,
-    appended with a copy of its license if it demands so.
+    Redistribution of source material are maked with <src>,
+    with a copy of its license appended if it demands so.
 
     All other code shall be considered liscenced under UNLICENSE,
     either as (re)implementation of their source materials,
@@ -51,6 +51,29 @@
     XeGTAO. Intel Corporation.
         url:    https://github.com/GameTechDev/XeGTAO
         credit: details of GTAO implementation
+                thin object heuristics <src>
+        license:
+            MIT License
+
+            Copyright (C) 2016-2021, Intel Corporation 
+
+            Permission is hereby granted, free of charge, to any person obtaining a copy
+            of this software and associated documentation files (the "Software"), to deal
+            in the Software without restriction, including without limitation the rights
+            to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+            copies of the Software, and to permit persons to whom the Software is
+            furnished to do so, subject to the following conditions:
+
+            The above copyright notice and this permission notice shall be included in all
+            copies or substantial portions of the Software.
+
+            THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+            IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+            FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+            AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+            LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+            OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+            SOFTWARE.
     Horizon-Based Indirect Lighting. Benoît "Patapom" Mayaux.
         url:    https://github.com/Patapom/GodComplex/blob/master/Tests/TestHBIL/2018%20Mayaux%20-%20Horizon-Based%20Indirect%20Lighting%20(HBIL).pdf
         credit: interleaved sampling
@@ -58,7 +81,7 @@
     Legit Engine. Alexander "Raikiri" Sannikov.
         url:    https://github.com/Raikiri/LegitEngine
                 multiple of their youtube videos and comments
-        credit: the idea of doing interleaved sampling on a single blurred z/color buffers in a single pass
+        credit: motivation
 */
 /*  NOTATION
 
@@ -78,9 +101,7 @@
     - bent normal
     - thickness heuristic
     - alternative bitmask impl (?)
-    - hi-z buffer w/ cone tracing
-        (guess that's what Sannikov means when they refer to "cone tracing" and all that integral math,
-         and his stride is tied to slice angle somehow, probably to sample the whole mipmap px)
+    - hi-z buffer w/ cone tracing (?)
 */
 
 #include "ReShade.fxh"
@@ -174,11 +195,10 @@ uniform float fSpreadExp <
     ui_step = 0.01;
 > = 0.7;
 
-// Separate AO and IL perhaps
-uniform float fMaxDistPx <
+uniform float fMaxAoSampleDistPx <
     ui_type = "slider";
     ui_category = "Sampling";
-    ui_label = "Max Distance (px)";
+    ui_label = "Max AO Distance (px)";
     ui_min = 2; ui_max = BUFFER_WIDTH;
     ui_step = 1;
 > = 150;
@@ -199,11 +219,35 @@ uniform float fJitterScale <
     ui_step = 0.01;
 > = 1.0;
 
+uniform float fAoRange <
+    ui_type = "slider";
+    ui_category = "Visual";
+    ui_label = "AO Range";
+    ui_min = 0; ui_max = 100.0;
+    ui_step = 0.1;
+> = 50.0;
+
+uniform float fAoFalloff <
+    ui_type = "slider";
+    ui_category = "Visual";
+    ui_label = "AO Falloff";
+    ui_min = 0; ui_max = 1.0;
+    ui_step = 0.001;
+> = 0.0;
+
+uniform float fThinOccluderCompensation <
+    ui_type = "slider";
+    ui_category = "Visual";
+    ui_label = "Thin Obj Compensation";
+    ui_min = 0; ui_max = 0.7;
+    ui_step = 0.01;
+> = 0.2;
+
 uniform float fIlStrength <
     ui_type = "slider";
     ui_category = "Mixing";
     ui_label = "IL";
-    ui_min = 0.0; ui_max = 2.0;
+    ui_min = 0.0; ui_max = 3.0;
     ui_step = 0.01;
 > = 1.0;
 
@@ -211,9 +255,10 @@ uniform float fAoStrength <
     ui_type = "slider";
     ui_category = "Mixing";
     ui_label = "AO";
-    ui_min = 0.0; ui_max = 4.0;
+    ui_tooltip = "Negative value for a non-physical-accurate exponential mixing.";
+    ui_min = -3.0; ui_max = 1.0;
     ui_step = 0.01;
-> = 2.0;
+> = 1.0;
 
 }
 
@@ -232,7 +277,6 @@ texture tex_blue <source = "YASSGI_bleu.png";> {Width = NOISE_SIZE; Height = NOI
 sampler samp_blue                              {Texture = tex_blue; AddressU = REPEAT; AddressV = REPEAT; AddressW = REPEAT;};
 
 // downscaled normal (RGB) raw_z (A)
-// blurred normal only used for rough backface verification as in the hbil paper.
 // tbf orig paper uses interleaved buffers (not blurred) but no sampler spamming for dx9.
 //                                          (or perhaps a separate shader(s) for those?)
 texture tex_blur_normal_z  {Width = BUFFER_WIDTH / INTERLEAVED_SIZE_PX; Height = BUFFER_HEIGHT / INTERLEAVED_SIZE_PX; Format = RGBA32F; MipLevels = MAX_MIP;};
@@ -422,6 +466,9 @@ void PS_GI(
     const float angle_sector = PI * rcp_dir_count;  // may confuse with bitmask il sectors; angle_increment? angle_pizza_slice?
     const float stride_px = max(1, fBaseStridePx + fBaseStridePx * (distrib.y - 0.5 + (blue_noise.x - 0.5) * fJitterScale) * 0.5);
     const float log2_stride_px = log2(stride_px);
+    const float falloff_start_px = fAoRange * (1 - fAoFalloff);
+    const float falloff_mul = -rcp(fAoRange);
+    const float falloff_add = falloff_start_px / fAoFalloff + 1;
 
     // per slice
     float4 sum = 0;
@@ -451,7 +498,7 @@ void PS_GI(
         for(uint side = 0; side <= 1; ++side)
         {
             const int side_sign = side * 2 - 1;
-            const float max_dist = min(fMaxDistPx, side ? dists.y : abs(dists.x));
+            const float max_dist = min(fMaxAoSampleDistPx, side ? dists.y : abs(dists.x));
             const float min_hor_cos = cos(n + side_sign * HALF_PI);
 
             // marching
@@ -469,8 +516,17 @@ void PS_GI(
 
                 const float raw_z_sample = tex2Dlod(samp_blur_normal_z, float4(uv_sample, mip_level, 0)).w;
                 const float3 pos_v_sample = uvzToView(uv_sample, raw_z_sample);
-                const float3 dir_v_hor = normalize(pos_v_sample - pos_v);
-                hor_cos = max(hor_cos, dot(dir_v_hor, dir_v_view));
+                const float3 offset_v = pos_v_sample - pos_v;
+
+                // thin obj heuristics
+                const float falloff = length(offset_v * float3(1, 1, 1 + fThinOccluderCompensation));
+                const float weight = saturate(falloff * falloff_mul + falloff_add);
+
+                const float3 dir_v_hor = normalize(offset_v);
+                float hor_cos_sample = dot(dir_v_hor, dir_v_view);
+                hor_cos_sample = lerp(min_hor_cos, hor_cos_sample, weight);
+                hor_cos = max(hor_cos, hor_cos_sample);
+                hor_cos = lerp(max(hor_cos, hor_cos_sample), hor_cos_sample, fThinOccluderCompensation);  // use em both!
 
                 float3 color_sample = tex2Dlod(samp_blur_color, float4(uv_sample, mip_level, 0)).rgb;
                 
@@ -509,17 +565,20 @@ void PS_Display(
 {
     color = tex2D(ReShade::BackBuffer, uv);
     float4 gi_ao = tex2Dlod(samp_gi_ao, float4(uv, 2, 0));  // no need for any filter, 3 slices and it's good enough w/ vanilla TAA
-    
+    float ao_mult = fAoStrength > 0 ?
+        saturate((1 - gi_ao.a) / (fAoStrength + EPS)) :  // normal mixing
+        exp2(gi_ao.a * fAoStrength);  // < 0 for exponential mixing
+
     if(iViewMode == 0)  // None
     {
         color.rgb = mul(g_colorInputMat, color.rgb);
         // color.rgb += gi_ao.rgb * fIlStrength;
-        color.rgb = color.rgb * exp2(-gi_ao.a * fAoStrength);
+        color.rgb = color.rgb * ao_mult;
         color.rgb = saturate(mul(g_colorOutputMat, color.rgb));
     }
     else if(iViewMode == 1)  // AO
     {
-        color.rgb = exp2(-gi_ao.a * fAoStrength);
+        color.rgb = ao_mult;
     }
 }
 
