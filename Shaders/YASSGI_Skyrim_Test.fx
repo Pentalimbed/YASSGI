@@ -288,7 +288,7 @@ float3 unpackNormal(float2 enc)
 
 float rawZToLinear01(float raw_z)
 {
-    return raw_z / fFarPlane - raw_z * (fFarPlane - fNearPlane);
+    return raw_z / (fFarPlane - raw_z * (fFarPlane - fNearPlane));
 }
 
 float3 uvzToWorld(float2 uv, float raw_z)
