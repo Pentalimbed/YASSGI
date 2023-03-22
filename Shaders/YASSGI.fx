@@ -237,9 +237,9 @@ uniform float fAoStrength <
     ui_type = "slider";
     ui_category = "Mixing";
     ui_label = "AO";
-    ui_min = 0.0; ui_max = 1.0;
+    ui_min = 0.0; ui_max = 3.0;
     ui_step = 0.01;
-> = 1.0;
+> = 2.0;
 
 uniform float fBackfaceLightMult <
     ui_type = "slider";
