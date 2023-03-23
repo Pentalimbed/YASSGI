@@ -191,8 +191,8 @@ uniform uint iDirCount <
     ui_type = "slider";
     ui_category = "Sampling";
     ui_label = "Slices";
-    ui_min = 1; ui_max = 6;
-> = 3;  
+    ui_min = 1; ui_max = 4;
+> = 2;  
 
 uniform float fBaseStridePx <
     ui_type = "slider";
@@ -200,7 +200,7 @@ uniform float fBaseStridePx <
     ui_label = "Base Stride (px)";
     ui_min = 1; ui_max = 64;
     ui_step = 1;
-> = 16;
+> = 32;
 
 uniform float fSpreadExp <
     ui_type = "slider";
@@ -307,14 +307,8 @@ sampler samp_blur_color {Texture = tex_blur_color;};
 texture tex_bent_normal  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F;};
 sampler samp_bent_normal {Texture = tex_bent_normal;};
 
-texture tex_gi_ao  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 2;};
+texture tex_gi_ao  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 3;};
 sampler samp_gi_ao {Texture = tex_gi_ao;};
-
-texture tex_gi_ao_blur1  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 2;};
-sampler samp_gi_ao_blur1 {Texture = tex_gi_ao_blur1;};
-
-texture tex_gi_ao_blur2  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 2;};
-sampler samp_gi_ao_blur2 {Texture = tex_gi_ao_blur2;};
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Functions
@@ -503,7 +497,7 @@ void PS_GI(
     for(uint idx_dir = 0; idx_dir < iDirCount; ++idx_dir)
     {
         // slice directions
-        const float angle_slice = (idx_dir + distrib.x + (blue_noise.y - 0.5) * fJitterScale) * angle_sector;
+        const float angle_slice = (idx_dir + distrib.x) * angle_sector + (blue_noise.y - 0.5) * fJitterScale * 2 * PI;
         float2 dir_px_slice; sincos(angle_slice, dir_px_slice.y, dir_px_slice.x);  // <-sincos here!
         const float2 dir_uv_slice = normalize(dir_px_slice * float2(BUFFER_WIDTH * BUFFER_RCP_HEIGHT, 1));
 
@@ -556,7 +550,7 @@ void PS_GI(
                     float hor_cos_sample = dot(dir_v_hor, dir_v_view);
                     hor_cos_sample = lerp(min_hor_cos, hor_cos_sample, weight);
                     hor_cos = max(hor_cos, hor_cos_sample);
-                    hor_cos = lerp(max(hor_cos, hor_cos_sample), hor_cos_sample, fThinOccluderCompensation);  // use em both!
+                    // hor_cos = lerp(max(hor_cos, hor_cos_sample), hor_cos_sample, fThinOccluderCompensation);
 
                     float3 color_sample = tex2Dlod(samp_blur_color, float4(uv_sample, mip_level, 0)).rgb;
                     // gi_ao.rgb = color_sample;
