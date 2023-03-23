@@ -248,7 +248,7 @@ uniform float fThinOccluderCompensation <
     ui_label = "Thin Obj Compensation";
     ui_min = 0; ui_max = 0.7;
     ui_step = 0.01;
-> = 0.5;
+> = 0.7;
 
 uniform float fLightSrcThres <
 	ui_type = "slider";
@@ -295,9 +295,9 @@ uniform float fAoStrength <
     ui_category = "Mixing";
     ui_label = "AO";
     ui_tooltip = "Negative value for non-physical-accurate exponential mixing.";
-    ui_min = -3.0; ui_max = 1.0;
+    ui_min = -2.0; ui_max = 1.0;
     ui_step = 0.01;
-> = 0.8;
+> = -1.5;
 
 }
 
@@ -532,7 +532,7 @@ void PS_GI(
     const uint px_idx = (dot(px_coord_shifted % INTERLEAVED_SIZE_PX, uint2(1, INTERLEAVED_SIZE_PX)) + (iFrameCount % 16)) % 16;
     const float2 distrib = hammersley(px_idx, INTERLEAVED_SIZE_PX * INTERLEAVED_SIZE_PX);
     // ^^^ x for angle, y for stride
-    const uint3 rand = pcg3d(uint3(px_coord_shifted, iFrameCount));
+    const uint3 rand = pcg3d(uint3(px_coord, iFrameCount));
     const float3 randf = rand / MAX_UINT_F;
 
     // some consts
@@ -619,7 +619,7 @@ void PS_GI(
                         // float t = 1;
                         radiance_sample = lerp(radiance_sample, radiance_sample_new, t);
 
-                        sum.rgb += radiance_sample * albedo;
+                        sum.rgb += max(0, radiance_sample * albedo);
 
                         hor_cos = hor_cos_sample;
                     }
