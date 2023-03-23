@@ -151,21 +151,25 @@ uniform float fFrameTime  < source = "TimingsReal"; >;
 
 // <---- UI ---->
 
-uniform float fDebug = 1;
+uniform float fDebug <
+    ui_type = "slider";
+    ui_min = 0; ui_max = 1;
+> = 1;
 
 uniform int iViewMode <
 	ui_type = "combo";
     ui_label = "View Mode";
-    ui_items = "YASSGI\0AO\0";
+    ui_items = "YASSGI\0AO\0IL\0";
 > = 0;
 
-uniform float2 fZRange <
-    ui_type = "slider";
-    ui_category = "Input";
-    ui_label = "Weapon/Sky Z Range";
-    ui_min = 0.0; ui_max = 25000;
-    ui_step = 0.1;
-> = float2(100, 20000);
+const static float2 fZRange = float2(0, 20000);
+// uniform float2 fZRange <
+//     ui_type = "slider";
+//     ui_category = "Input";
+//     ui_label = "Weapon/Sky Z Range";
+//     ui_min = 0.0; ui_max = 25000;
+//     ui_step = 0.1;
+// > = float2(100, 20000);
 
 uniform uint iDirCount <
     ui_type = "slider";
@@ -180,33 +184,33 @@ uniform float fBaseStridePx <
     ui_label = "Base Stride (px)";
     ui_min = 1; ui_max = 64;
     ui_step = 1;
-> = 32;
+> = 8;
 
 uniform float fSpreadExp <
     ui_type = "slider";
     ui_category = "Sampling";
     ui_label = "Spread Exponent";
-    ui_min = 0.0; ui_max = 1.0;
+    ui_min = 0.0; ui_max = 3.0;
     ui_step = 0.01;
-> = 0.7;
+> = 3;
 
-uniform float fMaxAoSampleDistPx <
+uniform float fStrideJitter <
     ui_type = "slider";
     ui_category = "Sampling";
-    ui_label = "AO Sample Distance (px)";
-    ui_min = 2; ui_max = BUFFER_WIDTH;
-    ui_step = 1;
-> = 150;
+    ui_label = "Stride Jitter";
+    ui_min = 0; ui_max = 1;
+    ui_step = 0.01;
+> = 0.5;
 
-uniform float fMaxIlSampleDistPx <
+uniform float fMaxSampleDistPx <
     ui_type = "slider";
     ui_category = "Sampling";
-    ui_label = "IL Sample Distance (px)";
+    ui_label = "Sample Distance (px)";
     ui_min = 2; ui_max = BUFFER_WIDTH;
     ui_step = 1;
-> = 150;
+> = 600;
 
-uniform float fSampleRangePx <
+uniform float fLodRangePx <
     ui_type = "slider";
     ui_category = "Sampling";
     ui_label = "LOD Range (px)";
@@ -214,13 +218,13 @@ uniform float fSampleRangePx <
     ui_step = 1;
 > = 48;
 
-uniform float fJitterScale <
-    ui_type = "slider";
-    ui_category = "Sampling";
-    ui_label = "Jitter Scale";
-    ui_min = 0; ui_max = 1;
-    ui_step = 0.01;
-> = 0.65;
+// uniform float fAngleJitterScale <
+//     ui_type = "slider";
+//     ui_category = "Sampling";
+//     ui_label = "Angle Jitter Scale";
+//     ui_min = 0; ui_max = 1;
+//     ui_step = 0.01;
+// > = 0.65;
 
 uniform float fFxRange <
     ui_type = "slider";
@@ -228,7 +232,7 @@ uniform float fFxRange <
     ui_label = "Effect Reach";
     ui_min = 0; ui_max = 100.0;
     ui_step = 0.1;
-> = 30.0;
+> = 50.0;
 
 uniform float fFxFalloff <
     ui_type = "slider";
@@ -236,7 +240,7 @@ uniform float fFxFalloff <
     ui_label = "Effect Falloff";
     ui_min = 0; ui_max = 1.0;
     ui_step = 0.001;
-> = 0.4;
+> = 0.7;
 
 uniform float fThinOccluderCompensation <
     ui_type = "slider";
@@ -246,13 +250,45 @@ uniform float fThinOccluderCompensation <
     ui_step = 0.01;
 > = 0.5;
 
+uniform float fLightSrcThres <
+	ui_type = "slider";
+    ui_label = "Light Source Threshold";
+    ui_tooltip = "Only pixels brighter than this are considered light-emitting.";
+	ui_category = "Visual";
+    ui_min = 0.0; ui_max = 1.0;
+    ui_step = 0.01;
+> = 0.1;
+
+uniform float fAlbedoSatPower <
+    ui_type = "slider";
+    ui_category = "Visual";
+    ui_label = "Albedo Saturation Power";
+    ui_tooltip = "Since ReShade has no way of knowing the true albedo of a surface separate from lighting,\n"
+        "any shader has to guess. A value of 0.0 tells the shader that everything is monochrome, and its\n"
+        "hue is the result of lighting. Greater value yields more saturated output on colored surfaces.\n";
+    ui_min = 0.0; ui_max = 10.0;
+    ui_step = 0.01;
+> = 1.0;
+
+uniform float fAlbedoNorm <
+    ui_type = "slider";
+    ui_category = "Visual";
+    ui_label = "Albedo Normalization";
+    ui_tooltip = "Since ReShade has no way of knowing the true albedo of a surface separate from lighting,\n"
+        "any shader has to guess. A value of 0.0 tells the shader that there is no lighting in the scene,\n"
+        "so dark surfaces are actually black. 1.0 says that all surfaces are in fact colored brightly, and\n"
+        "the variation in brightness are the result of illumination, rather than the texture pattern itself.";
+    ui_min = 0.0; ui_max = 1.0;
+    ui_step = 0.01;
+> = 0.8;
+
 uniform float fIlStrength <
     ui_type = "slider";
     ui_category = "Mixing";
     ui_label = "IL";
     ui_min = 0.0; ui_max = 3.0;
     ui_step = 0.01;
-> = 1.0;
+> = 2.0;
 
 uniform float fAoStrength <
     ui_type = "slider";
@@ -261,7 +297,7 @@ uniform float fAoStrength <
     ui_tooltip = "Negative value for non-physical-accurate exponential mixing.";
     ui_min = -3.0; ui_max = 1.0;
     ui_step = 0.01;
-> = -1.5;
+> = 0.8;
 
 }
 
@@ -296,31 +332,12 @@ sampler samp_blur_color {Texture = tex_blur_color;};
 texture tex_bent_normal  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F;};
 sampler samp_bent_normal {Texture = tex_bent_normal;};
 
-texture tex_gi_ao  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 3;};
-sampler samp_gi_ao {Texture = tex_gi_ao;};
+texture tex_il_ao  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 3;};
+sampler samp_il_ao {Texture = tex_il_ao;};
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Functions
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-
-// <---- Utility ---->
-
-bool isInScreen(float2 uv) { return all(uv >= 0) && all(uv < 1); }
-
-// box = minx, miny, maxx, maxy
-// retval = nearest / farthest traversal distance (can be negative)
-// use retval.x < retval.y to check if truly intersected
-float2 intersectBox(float2 orig, float2 dir, float4 box)
-{
-    float4 dists = (box - orig.xyxy) * rcp(dir).xyxy;
-    return float2(max(min(dists.x, dists.z), min(dists.y, dists.w)),
-                  min(max(dists.x, dists.z), max(dists.y, dists.w)));
-}
-
-float3 projectToPlane(float3 v, float3 normal)
-{
-    return v - dot(v, normal) * normal;
-}
 
 // <---- Input ---->
 
@@ -361,6 +378,13 @@ bool isNear(float z){return z < fNearPlane;}
 bool isFar(float z){return z > fFarPlane;}
 bool isWeapon(float z){return z < fZRange.x;}
 bool isSky(float z){return z > fZRange.y;}
+
+float3 fakeAlbedo(float3 color)
+{
+    float3 albedo = pow(max(0, color), fAlbedoSatPower * length(color));  // length(color) suppress saturation of darker colors
+    albedo = saturate(lerp(albedo, normalize(albedo), fAlbedoNorm));
+    return albedo;
+}
 
 // <---- Sampling ---->
 
@@ -410,6 +434,46 @@ uint4 pcg4d(uint4 v)
     return v;
 }
 
+// <---- Misc ---->
+
+bool isInScreen(float2 uv) { return all(uv >= 0) && all(uv < 1); }
+
+// box = minx, miny, maxx, maxy
+// retval = nearest / farthest traversal distance (can be negative)
+// use retval.x < retval.y to check if truly intersected
+float2 intersectBox(float2 orig, float2 dir, float4 box)
+{
+    float4 dists = (box - orig.xyxy) * rcp(dir).xyxy;
+    return float2(max(min(dists.x, dists.z), min(dists.y, dists.w)),
+                  min(max(dists.x, dists.z), max(dists.y, dists.w)));
+}
+
+float3 projectToPlane(float3 v, float3 normal)
+{
+    return v - dot(v, normal) * normal;
+}
+
+// HBIL pp.29
+float ilIntegral(float nx, float ny, float cos_prev, float cos_new)
+{
+    float delta_angle = acosFast4(cos_prev) - acosFast4(cos_new);
+    float sin_prev = sqrt(1 - cos_prev * cos_prev);
+    float sin_new = sqrt(1 - cos_new * cos_new);
+    return 0.5 * nx * (delta_angle + sin_prev * cos_prev - sin_new * cos_new) + 0.5 * ny * (sin_prev * sin_prev - sin_new * sin_new);
+}
+
+float computeHorizonContribution(float3 eyeDir, float3 eyeTangent, float3 viewNorm, float minAngle, float maxAngle)
+{
+  return
+    +0.25 * dot(eyeDir, viewNorm) * (- cos(2.0 * maxAngle) + cos(2.0 * minAngle))
+    +0.25 * dot(eyeTangent, viewNorm) * (2.0 * maxAngle - 2.0 * minAngle - sin(2.0 * maxAngle) + sin(2.0 * minAngle));
+}
+
+float luminance(float3 color)
+{
+    return dot(color, float3(0.21267291505, 0.71515223009, 0.07217499918));
+}
+
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Pixel Shaders
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -442,35 +506,39 @@ void PS_PreBlur(
 
 void PS_GI(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
-    out float4 gi_ao : SV_Target0, out float4 normal_bent : SV_Target1
+    out float4 il_ao : SV_Target0, out float4 normal_bent : SV_Target1
 )
 {
     float4 temp = 0;  // temp vec for debug
 
-    gi_ao = 0;
+    il_ao = 0;
     normal_bent = 0;
 
     const uint2 px_coord = uv * BUFFER_SIZE;
 
+    const float3 color = mul(g_colorInputMat, tex2Dfetch(ReShade::BackBuffer, px_coord).rgb);
+    const float3 albedo = fakeAlbedo(color);
     const float3 normal_v = unpackNormal(tex2Dfetch(Skyrim::samp_normal, px_coord).xy);
     const float raw_z = tex2Dfetch(Skyrim::samp_depth, px_coord).x;
-    const float3 pos_v = uvzToView(uv, raw_z) * 0.99999;  // closer to the screen bc we're using blurred geometry
+    const float3 pos_v = uvzToView(uv, raw_z) * 0.99995;  // closer to the screen bc we're using blurred geometry
     const float3 dir_v_view = -normalize(pos_v);
 
     [branch]
     if(isWeapon(pos_v.z) || isSky(pos_v.z))  // leave sky alone
         return;
 
-    // interleaved sampling
+    // interleaved sampling (enough for ao)
     const uint2 px_coord_shifted = px_coord + (iFrameCount % 4) * uint2((iFrameCount % 8 < 4) * 2 - 1, 1);  // de-grid
-    const uint px_idx = dot(px_coord_shifted % INTERLEAVED_SIZE_PX, uint2(1, INTERLEAVED_SIZE_PX));
+    const uint px_idx = (dot(px_coord_shifted % INTERLEAVED_SIZE_PX, uint2(1, INTERLEAVED_SIZE_PX)) + (iFrameCount % 16)) % 16;
     const float2 distrib = hammersley(px_idx, INTERLEAVED_SIZE_PX * INTERLEAVED_SIZE_PX);
     // ^^^ x for angle, y for stride
+    const uint3 rand = pcg3d(uint3(px_coord_shifted, iFrameCount));
+    const float3 randf = rand / MAX_UINT_F;
 
     // some consts
     const float rcp_dir_count = 1.0 / iDirCount;
     const float angle_sector = PI * rcp_dir_count;  // may confuse with bitmask il sectors; angle_increment? angle_pizza_slice?
-    const float stride_px = max(1, lerp(fBaseStridePx * (1 - fJitterScale), fBaseStridePx, distrib.y / MAX_UINT_F));
+    const float stride_px = max(1, fBaseStridePx * (0.5 + distrib.y + randf.x * fStrideJitter));
     const float log2_stride_px = log2(stride_px);
     const float falloff_start_px = fFxRange * (1 - fFxFalloff);
     const float falloff_mul = -rcp(fFxRange);
@@ -482,7 +550,7 @@ void PS_GI(
     for(uint idx_dir = 0; idx_dir < iDirCount; ++idx_dir)
     {
         // slice directions
-        const float angle_slice = (idx_dir + distrib.x + ((iFrameCount % 7)/ 7.0 - 0.5) * fJitterScale) * angle_sector;
+        const float angle_slice = (idx_dir + distrib.x) * angle_sector;
         float2 dir_px_slice; sincos(angle_slice, dir_px_slice.y, dir_px_slice.x);  // <-sincos here!
         const float2 dir_uv_slice = normalize(dir_px_slice * float2(BUFFER_WIDTH * BUFFER_RCP_HEIGHT, 1));
 
@@ -490,9 +558,10 @@ void PS_GI(
         const float3 dir_v_slice_local = projectToPlane(dir_v_slice_screen, dir_v_view);
         const float3 normal_slice = normalize(cross(dir_v_slice_local, dir_v_view));
         const float3 normal_proj = projectToPlane(normal_v, normal_slice);  // not unit vector
-
+        const float3 normal_proj_normalized = normalize(normal_proj);
+        
         const float sign_n = sign(dot(dir_v_slice_local, normal_proj));
-        const float cos_n = saturate(dot(normalize(normal_proj), dir_v_view));
+        const float cos_n = saturate(dot(normal_proj_normalized, dir_v_view));
         const float n = sign_n * acosFast4(cos_n);
         const float sin_n = sin(n);
         
@@ -504,13 +573,14 @@ void PS_GI(
         for(uint side = 0; side <= 1; ++side)
         {
             const int side_sign = side * 2 - 1;
-            const float max_dist = min(fMaxAoSampleDistPx, side ? dists.y : abs(dists.x));
+            const float max_dist = min(fMaxSampleDistPx, side ? dists.y : abs(dists.x));
             const float min_hor_cos = cos(n + side_sign * HALF_PI);
 
             // marching
             uint step = 0;
             float dist_px = stride_px;
             float hor_cos = min_hor_cos;
+            float3 radiance_sample = 0;
             [loop]
             while(dist_px < max_dist && step < 64)  // preventing infinite loop when you tweak params in ReShade
             {
@@ -520,8 +590,8 @@ void PS_GI(
 
                 const uint mip_level = clamp(log2(dist_px) - log2_stride_px, 0, MAX_MIP);
 
-                const float raw_z_sample = tex2Dlod(samp_blur_normal_z, float4(uv_sample, mip_level, 0)).w;
-                const float3 pos_v_sample = uvzToView(uv_sample, raw_z_sample);
+                const float4 geo_sample = tex2Dlod(samp_blur_normal_z, float4(uv_sample, mip_level, 0));
+                const float3 pos_v_sample = uvzToView(uv_sample, geo_sample.w);
                 const float3 offset_v = pos_v_sample - pos_v;
 
                 [branch]
@@ -534,31 +604,45 @@ void PS_GI(
                     const float3 dir_v_hor = normalize(offset_v);
                     float hor_cos_sample = dot(dir_v_hor, dir_v_view);
                     hor_cos_sample = lerp(min_hor_cos, hor_cos_sample, weight);
-                    hor_cos = max(hor_cos, hor_cos_sample);
-                    // hor_cos = lerp(max(hor_cos, hor_cos_sample), hor_cos_sample, fThinOccluderCompensation);
 
-                    float3 color_sample = tex2Dlod(samp_blur_color, float4(uv_sample, mip_level, 0)).rgb;
-                    // gi_ao.rgb = color_sample;
+                    [branch]
+                    if(hor_cos_sample > hor_cos)
+                    {
+                        float3 radiance_sample_new = tex2Dlod(samp_blur_color, float4(uv_sample, mip_level, 0)).rgb;
+                        radiance_sample_new = luminance(radiance_sample_new) > fLightSrcThres ? radiance_sample_new : 0;
+                        // radiance_sample_new *= ilIntegral(cos_n * side_sign, sin_n, hor_cos, hor_cos_sample);
+                        radiance_sample_new *= computeHorizonContribution(dir_v_view, dir_v_slice_local, normal_v, acosFast4(hor_cos_sample), acosFast4(hor_cos));
+
+                        // depth filtering. HBIL pp.38
+                        float t = smoothstep(0, 1, dot(geo_sample.xyz, offset_v));
+                        // float t = dot(geo_sample.xyz, offset_v) > -EPS;
+                        // float t = 1;
+                        radiance_sample = lerp(radiance_sample, radiance_sample_new, t);
+
+                        sum.rgb += radiance_sample * albedo;
+
+                        hor_cos = hor_cos_sample;
+                    }
                 }
 
-                dist_px += stride_px * exp2((step + distrib.y) * fSpreadExp);
+                dist_px += stride_px * exp2(step * fSpreadExp);
                 ++step;  // 2 same stride at the start. more precise perhaps (?)
             }
 
             const float h = acosFast4(hor_cos);
             const float angle_hor = n + clamp(side_sign * h - n, -HALF_PI, HALF_PI);  // XeGTAO suggested skipping clamping. Hmmm...
-            sum.w += saturate(length(normal_proj) * 0.25 * (cos_n + 2 * angle_hor * sin_n - cos(2 * angle_hor - n))) / iDirCount;
+            sum.w += saturate(length(normal_proj) * 0.25 * (cos_n + 2 * angle_hor * sin_n - cos(2 * angle_hor - n)));
             
             side ? h1 : h0 = h;
         }
 
         // bent normal (Algorithm 2)
-        float t0 = (6 * sin(h0 - n) - sin(3 * h0 - n) +
+        const float t0 = (6 * sin(h0 - n) - sin(3 * h0 - n) +
                     6 * sin(h1 - n) - sin(3 * h1 - n) + 
                     16 * sin(n) - 3 * (sin(h0 + n) + sin(h1 + n))) * 0.083333333333333333333;  // rcp 12
-        float t1 = (-cos(3 * h0 - n) - cos(3 * h1 - n) +
+        const float t1 = (-cos(3 * h0 - n) - cos(3 * h1 - n) +
                     8 * cos(n) - 3 * (cos(h0 + n) +cos(h1 + n))) * 0.083333333333333333333;
-        float3 normal_bent_local = float3(dir_px_slice * t0, -t1);
+        const float3 normal_bent_local = float3(dir_px_slice * t0, -t1);
         normal_bent.rgb += normal_bent_local;
     }
 
@@ -566,8 +650,11 @@ void PS_GI(
 
     normal_bent.xyz = normalize(normal_bent.xyz);
     normal_bent.w = 1;
-    gi_ao.w = clamp(1 - sum.w, 0, 0.95);  // got -inf here...
-    // gi_ao = temp;
+
+    sum /= iDirCount;
+    il_ao.rgb = sum.rgb;
+    il_ao.w = clamp(1 - sum.w, 0, 0.95);  // got -inf here...
+    // il_ao = temp;
 }
 
 void PS_Display(
@@ -575,21 +662,25 @@ void PS_Display(
     out float4 color : SV_Target)
 {
     color = tex2D(ReShade::BackBuffer, uv);
-    float4 gi_ao = tex2Dlod(samp_gi_ao, float4(uv, 2, 0));  // no need for any filter, 3 slices and it's good enough w/ vanilla TAA
+    float4 il_ao = tex2Dlod(samp_il_ao, float4(uv, 2, 0));  // no need for any filter, 3 slices and it's good enough w/ vanilla TAA
     float ao_mult = fAoStrength > 0 ?
-        saturate((1 - gi_ao.a) / (fAoStrength + EPS)) :  // normal mixing
-        exp2(gi_ao.a * fAoStrength);  // exponential mixing
+        lerp(1, 1 - il_ao.a, fAoStrength) :  // normal mixing
+        exp2(il_ao.a * fAoStrength);  // exponential mixing
 
     if(iViewMode == 0)  // None
     {
         color.rgb = mul(g_colorInputMat, color.rgb);
-        // color.rgb += gi_ao.rgb * fIlStrength;
+        color.rgb += il_ao.rgb * fIlStrength;
         color.rgb = color.rgb * ao_mult;
-        color.rgb = saturate(mul(g_colorOutputMat, color.rgb));
+        color.rgb = mul(g_colorOutputMat, color.rgb);
     }
     else if(iViewMode == 1)  // AO
     {
         color.rgb = ao_mult;
+    }
+    else if(iViewMode == 2)  // IL
+    {
+        color.rgb = mul(g_colorOutputMat, il_ao.rgb * fIlStrength);
     }
 }
 
@@ -604,7 +695,7 @@ technique YASSGI_Skyrim
     pass {
         VertexShader = PostProcessVS;
         PixelShader = PS_GI;
-        RenderTarget0 = tex_gi_ao;
+        RenderTarget0 = tex_il_ao;
         RenderTarget1 = tex_bent_normal;
     }
     pass {
