@@ -51,29 +51,7 @@
     XeGTAO. Intel Corporation.
         url:    https://github.com/GameTechDev/XeGTAO
         credit: details of GTAO implementation
-                thin object heuristics <src>
-        license:
-            MIT License
-
-            Copyright (C) 2016-2021, Intel Corporation 
-
-            Permission is hereby granted, free of charge, to any person obtaining a copy
-            of this software and associated documentation files (the "Software"), to deal
-            in the Software without restriction, including without limitation the rights
-            to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-            copies of the Software, and to permit persons to whom the Software is
-            furnished to do so, subject to the following conditions:
-
-            The above copyright notice and this permission notice shall be included in all
-            copies or substantial portions of the Software.
-
-            THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-            IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-            FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-            AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-            LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-            OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-            SOFTWARE.
+                thin object heuristics
     Horizon-Based Indirect Lighting. Benoît "Patapom" Mayaux.
         url:    https://github.com/Patapom/GodComplex/blob/master/Tests/TestHBIL/2018%20Mayaux%20-%20Horizon-Based%20Indirect%20Lighting%20(HBIL).pdf
         credit: interleaved sampling
@@ -98,10 +76,12 @@
 /*  TODO
 
     - il
-    - bent normal
-    - thickness heuristic
+    o bent normal
+    o thickness heuristic
     - alternative bitmask impl (?)
     - hi-z buffer w/ cone tracing (?)
+    - remove subtle grid like pattern
+    - ibl
 */
 
 #include "ReShade.fxh"
@@ -213,7 +193,15 @@ uniform float fSpreadExp <
 uniform float fMaxAoSampleDistPx <
     ui_type = "slider";
     ui_category = "Sampling";
-    ui_label = "Max AO Distance (px)";
+    ui_label = "AO Sample Distance (px)";
+    ui_min = 2; ui_max = BUFFER_WIDTH;
+    ui_step = 1;
+> = 150;
+
+uniform float fMaxIlSampleDistPx <
+    ui_type = "slider";
+    ui_category = "Sampling";
+    ui_label = "IL Sample Distance (px)";
     ui_min = 2; ui_max = BUFFER_WIDTH;
     ui_step = 1;
 > = 150;
@@ -224,28 +212,28 @@ uniform float fSampleRangePx <
     ui_label = "LOD Range (px)";
     ui_min = 2; ui_max = 64;
     ui_step = 1;
-> = 32;
+> = 48;
 
 uniform float fJitterScale <
     ui_type = "slider";
     ui_category = "Sampling";
     ui_label = "Jitter Scale";
-    ui_min = 0; ui_max = 2;
+    ui_min = 0; ui_max = 1;
     ui_step = 0.01;
-> = 1.0;
+> = 0.65;
 
-uniform float fAoRange <
+uniform float fFxRange <
     ui_type = "slider";
     ui_category = "Visual";
-    ui_label = "AO Range";
+    ui_label = "Effect Reach";
     ui_min = 0; ui_max = 100.0;
     ui_step = 0.1;
 > = 30.0;
 
-uniform float fAoFalloff <
+uniform float fFxFalloff <
     ui_type = "slider";
     ui_category = "Visual";
-    ui_label = "AO Falloff";
+    ui_label = "Effect Falloff";
     ui_min = 0; ui_max = 1.0;
     ui_step = 0.001;
 > = 0.4;
@@ -292,12 +280,13 @@ sampler samp_depth { Texture = tex_depth; };
 
 namespace YASSGI_SKYRIM
 {
-texture tex_blue <source = "YASSGI_bleu.png";> {Width = NOISE_SIZE; Height = NOISE_SIZE; Format = RGBA8;};
-sampler samp_blue                              {Texture = tex_blue; AddressU = REPEAT; AddressV = REPEAT; AddressW = REPEAT;};
+// texture tex_blue <source = "YASSGI_bleu.png";> {Width = NOISE_SIZE; Height = NOISE_SIZE; Format = RGBA8;};
+// sampler samp_blue                              {Texture = tex_blue; AddressU = REPEAT; AddressV = REPEAT; AddressW = REPEAT;};
 
 // downscaled normal (RGB) raw_z (A)
 // tbf orig paper uses interleaved buffers (not blurred) but no sampler spamming for dx9.
 //                                          (or perhaps a separate shader(s) for those?)
+// Edit: I do think we need those for maximal performance.
 texture tex_blur_normal_z  {Width = BUFFER_WIDTH * YASSGI_PREBLUR_SCALE; Height = BUFFER_HEIGHT * YASSGI_PREBLUR_SCALE; Format = RGBA32F; MipLevels = MAX_MIP;};
 sampler samp_blur_normal_z {Texture = tex_blur_normal_z;};
 
@@ -465,7 +454,7 @@ void PS_GI(
 
     const float3 normal_v = unpackNormal(tex2Dfetch(Skyrim::samp_normal, px_coord).xy);
     const float raw_z = tex2Dfetch(Skyrim::samp_depth, px_coord).x;
-    const float3 pos_v = uvzToView(uv, raw_z) * 0.99995;  // closer to the screen bc we're using blurred geometry
+    const float3 pos_v = uvzToView(uv, raw_z) * 0.99999;  // closer to the screen bc we're using blurred geometry
     const float3 dir_v_view = -normalize(pos_v);
 
     [branch]
@@ -473,31 +462,27 @@ void PS_GI(
         return;
 
     // interleaved sampling
-    const uint px_idx = px_coord.x + px_coord.y * INTERLEAVED_SIZE_PX;
-    const float2 distrib = hammersley(
-        px_idx % (INTERLEAVED_SIZE_PX * INTERLEAVED_SIZE_PX),
-        INTERLEAVED_SIZE_PX * INTERLEAVED_SIZE_PX);
+    const uint2 px_coord_shifted = px_coord + (iFrameCount % 4) * uint2((iFrameCount % 8 < 4) * 2 - 1, 1);  // de-grid
+    const uint px_idx = dot(px_coord_shifted % INTERLEAVED_SIZE_PX, uint2(1, INTERLEAVED_SIZE_PX));
+    const float2 distrib = hammersley(px_idx, INTERLEAVED_SIZE_PX * INTERLEAVED_SIZE_PX);
     // ^^^ x for angle, y for stride
-    const uint block_idx = dot(px_idx / INTERLEAVED_SIZE_PX, uint2(BUFFER_WIDTH / INTERLEAVED_SIZE_PX, 1));  // use block id bc essentially a block is a whole unit
-    const uint3 rand = pcg3d(uint3(block_idx, 0, iFrameCount));
-    float4 blue_noise = tex2Dfetch(samp_blue, (px_coord + rand.xy) % NOISE_SIZE);
 
     // some consts
     const float rcp_dir_count = 1.0 / iDirCount;
     const float angle_sector = PI * rcp_dir_count;  // may confuse with bitmask il sectors; angle_increment? angle_pizza_slice?
-    const float stride_px = max(1, fBaseStridePx + fBaseStridePx * (distrib.y - 0.5 + (blue_noise.x - 0.5) * fJitterScale) * 0.5);
+    const float stride_px = max(1, lerp(fBaseStridePx * (1 - fJitterScale), fBaseStridePx, distrib.y / MAX_UINT_F));
     const float log2_stride_px = log2(stride_px);
-    const float falloff_start_px = fAoRange * (1 - fAoFalloff);
-    const float falloff_mul = -rcp(fAoRange);
-    const float falloff_add = falloff_start_px / fAoFalloff + 1;
+    const float falloff_start_px = fFxRange * (1 - fFxFalloff);
+    const float falloff_mul = -rcp(fFxRange);
+    const float falloff_add = falloff_start_px / fFxFalloff + 1;
 
     // per slice
-    float4 sum = 0;
+    float4 sum = 0;  // visibility
     [loop]  // unroll?
     for(uint idx_dir = 0; idx_dir < iDirCount; ++idx_dir)
     {
         // slice directions
-        const float angle_slice = (idx_dir + distrib.x) * angle_sector + (blue_noise.y - 0.5) * fJitterScale * 2 * PI;
+        const float angle_slice = (idx_dir + distrib.x + ((iFrameCount % 7)/ 7.0 - 0.5) * fJitterScale) * angle_sector;
         float2 dir_px_slice; sincos(angle_slice, dir_px_slice.y, dir_px_slice.x);  // <-sincos here!
         const float2 dir_uv_slice = normalize(dir_px_slice * float2(BUFFER_WIDTH * BUFFER_RCP_HEIGHT, 1));
 
@@ -562,7 +547,7 @@ void PS_GI(
 
             const float h = acosFast4(hor_cos);
             const float angle_hor = n + clamp(side_sign * h - n, -HALF_PI, HALF_PI);  // XeGTAO suggested skipping clamping. Hmmm...
-            sum.w += length(normal_proj) * 0.25 * (cos_n + 2 * angle_hor * sin_n - cos(2 * angle_hor - n));
+            sum.w += saturate(length(normal_proj) * 0.25 * (cos_n + 2 * angle_hor * sin_n - cos(2 * angle_hor - n))) / iDirCount;
             
             side ? h1 : h0 = h;
         }
@@ -581,7 +566,7 @@ void PS_GI(
 
     normal_bent.xyz = normalize(normal_bent.xyz);
     normal_bent.w = 1;
-    gi_ao.w = clamp(1 - sum.w / iDirCount, 0.03, 1);  // got -inf here...
+    gi_ao.w = clamp(1 - sum.w, 0, 0.95);  // got -inf here...
     // gi_ao = temp;
 }
 
@@ -593,7 +578,7 @@ void PS_Display(
     float4 gi_ao = tex2Dlod(samp_gi_ao, float4(uv, 2, 0));  // no need for any filter, 3 slices and it's good enough w/ vanilla TAA
     float ao_mult = fAoStrength > 0 ?
         saturate((1 - gi_ao.a) / (fAoStrength + EPS)) :  // normal mixing
-        exp2(gi_ao.a * fAoStrength);  // < 0 for exponential mixing
+        exp2(gi_ao.a * fAoStrength);  // exponential mixing
 
     if(iViewMode == 0)  // None
     {
