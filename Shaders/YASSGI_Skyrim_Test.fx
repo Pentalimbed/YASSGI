@@ -3,7 +3,7 @@
     Redistribution of source material are maked with <src>,
     with a copy of its license appended if it demands so.
 
-    All other code shall be considered liscenced under UNLICENSE,
+    All other code shall be considered licensed under UNLICENSE,
     either as (re)implementation of their source materials,
     or as the author's original work.
 
@@ -559,7 +559,7 @@ void PS_GI(
                     hor_cos = lerp(max(hor_cos, hor_cos_sample), hor_cos_sample, fThinOccluderCompensation);  // use em both!
 
                     float3 color_sample = tex2Dlod(samp_blur_color, float4(uv_sample, mip_level, 0)).rgb;
-                    gi_ao.rgb = color_sample;
+                    // gi_ao.rgb = color_sample;
                 }
 
                 dist_px += stride_px * exp2((step + distrib.y) * fSpreadExp);
