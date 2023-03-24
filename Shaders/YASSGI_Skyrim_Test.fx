@@ -188,7 +188,7 @@ uniform float fBaseStridePx <
     ui_label = "Base Stride (px)";
     ui_min = 1; ui_max = 64;
     ui_step = 1;
-> = 8;
+> = 16;
 
 uniform float fSpreadExp <
     ui_type = "slider";
@@ -196,7 +196,7 @@ uniform float fSpreadExp <
     ui_label = "Spread Exponent";
     ui_min = 0.0; ui_max = 3.0;
     ui_step = 0.01;
-> = 3;
+> = 2;
 
 uniform float fStrideJitter <
     ui_type = "slider";
@@ -204,7 +204,7 @@ uniform float fStrideJitter <
     ui_label = "Stride Jitter";
     ui_min = 0; ui_max = 1;
     ui_step = 0.01;
-> = 0.5;
+> = 0.3;
 
 uniform float fMaxSampleDistPx <
     ui_type = "slider";
@@ -212,7 +212,7 @@ uniform float fMaxSampleDistPx <
     ui_label = "Sample Distance (px)";
     ui_min = 2; ui_max = BUFFER_WIDTH;
     ui_step = 1;
-> = 600;
+> = 400;
 
 uniform float fLodRangePx <
     ui_type = "slider";
@@ -320,8 +320,8 @@ sampler samp_depth { Texture = tex_depth; };
 
 namespace YASSGI_SKYRIM
 {
-// texture tex_blue <source = "YASSGI_bleu.png";> {Width = NOISE_SIZE; Height = NOISE_SIZE; Format = RGBA8;};
-// sampler samp_blue                              {Texture = tex_blue; AddressU = REPEAT; AddressV = REPEAT; AddressW = REPEAT;};
+texture tex_blue <source = "YASSGI_bleu.png";> {Width = NOISE_SIZE; Height = NOISE_SIZE; Format = RGBA8;};
+sampler samp_blue                              {Texture = tex_blue; AddressU = REPEAT; AddressV = REPEAT; AddressW = REPEAT;};
 
 // downscaled normal (RGB) raw_z (A)
 // tbf orig paper uses interleaved buffers (not blurred) but no sampler spamming for dx9.
@@ -336,9 +336,14 @@ sampler samp_blur_color {Texture = tex_blur_color;};
 texture tex_bent_normal  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F;};
 sampler samp_bent_normal {Texture = tex_bent_normal;};
 
-texture tex_il_ao  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 3;};
+texture tex_il_ao  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 1;};
 sampler samp_il_ao {Texture = tex_il_ao;};
 
+texture tex_il_ao_ac1  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 1;};
+sampler samp_il_ao_ac1 {Texture = tex_il_ao_ac1;};
+
+texture tex_il_ao_ac2  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 1;};
+sampler samp_il_ao_ac2 {Texture = tex_il_ao_ac2;};
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Functions
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -532,12 +537,9 @@ void PS_GI(
         return;
     
     const uint3 rand = pcg3d(uint3(px_coord, iFrameCount));
-    const float3 randf = rand / MAX_UINT_F;
+    const float4 blue = tex2Dfetch(samp_blue, (px_coord + rand.xy) % NOISE_SIZE);
     // interleaved sampling (enough for ao)
-    uint2 px_coord_shifted = px_coord + (iFrameCount % 4) * uint2((iFrameCount % 8 < 4) * 2 - 1, 1);  // de-grid
-    px_coord_shifted.x = rand.x % 2 ? BUFFER_WIDTH - px_coord_shifted.x : px_coord_shifted.x;
-    px_coord_shifted.y = rand.x % 4 < 2 ? BUFFER_HEIGHT - px_coord_shifted.y : px_coord_shifted.y;
-    px_coord_shifted = rand.y % 2 ? px_coord_shifted.yx : px_coord_shifted;
+    uint2 px_coord_shifted = px_coord + blue.xy * 8;  // de-grid
     const uint px_idx = (dot(px_coord_shifted % INTERLEAVED_SIZE_PX, uint2(1, INTERLEAVED_SIZE_PX)) + (iFrameCount % 16)) % 16;
     const float2 distrib = hammersley(px_idx, INTERLEAVED_SIZE_PX * INTERLEAVED_SIZE_PX);
     // ^^^ x for angle, y for stride
@@ -545,7 +547,7 @@ void PS_GI(
     // some consts
     const float rcp_dir_count = 1.0 / iDirCount;
     const float angle_sector = PI * rcp_dir_count;  // may confuse with bitmask il sectors; angle_increment? angle_pizza_slice?
-    const float stride_px = max(1, fBaseStridePx * (0.5 + distrib.y + randf.z * fStrideJitter));
+    const float stride_px = max(1, fBaseStridePx * (0.5 + distrib.y + blue.z * fStrideJitter));
     const float log2_stride_px = log2(stride_px);
     const float falloff_start_px = fFxRange * (1 - fFxFalloff);
     const float falloff_mul = -rcp(fFxRange);
@@ -668,12 +670,30 @@ void PS_GI(
     // il_ao = temp;
 }
 
+void PS_Accum(
+    in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
+    out float4 il_ao_accum : SV_Target)
+{
+    const uint2 px_coord = uv * BUFFER_SIZE;
+
+    float4 il_ao_curr = tex2Dfetch(samp_il_ao, px_coord);
+    float4 il_ao_hist = tex2Dfetch(samp_il_ao_ac2, px_coord);
+    il_ao_accum = lerp(il_ao_hist, il_ao_curr, rcp(1 + fDebug));
+}
+
+void PS_AccumCopy(
+    in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
+    out float4 il_ao_hist : SV_Target)
+{
+    il_ao_hist = tex2Dfetch(samp_il_ao_ac1, uv * BUFFER_SIZE);
+}
+
 void PS_Display(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
     out float4 color : SV_Target)
 {
     color = tex2D(ReShade::BackBuffer, uv);
-    float4 il_ao = tex2Dlod(samp_il_ao, float4(uv, 2, 0));  // no need for any filter, 3 slices and it's good enough w/ vanilla TAA
+    float4 il_ao = tex2Dlod(samp_il_ao, float4(uv, 1, 0));  // no need for any filter, 3 slices and it's good enough w/ vanilla TAA
     float ao_mult = fAoStrength > 0 ?
         lerp(1, 1 - il_ao.a, fAoStrength) :  // normal mixing
         exp2(il_ao.a * fAoStrength);  // exponential mixing
@@ -695,6 +715,8 @@ void PS_Display(
     }
 }
 
+
+
 technique YASSGI_Skyrim
 {
     pass {
@@ -709,6 +731,16 @@ technique YASSGI_Skyrim
         RenderTarget0 = tex_il_ao;
         RenderTarget1 = tex_bent_normal;
     }
+    // pass {
+    //     VertexShader = PostProcessVS;
+    //     PixelShader = PS_Accum;
+    //     RenderTarget0 = tex_il_ao_ac1;
+    // }
+    // pass {
+    //     VertexShader = PostProcessVS;
+    //     PixelShader = PS_AccumCopy;
+    //     RenderTarget0 = tex_il_ao_ac2;
+    // }
     pass {
         VertexShader = PostProcessVS;
         PixelShader = PS_Display;
