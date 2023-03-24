@@ -51,7 +51,29 @@
     XeGTAO. Intel Corporation.
         url:    https://github.com/GameTechDev/XeGTAO
         credit: details of GTAO implementation
-                thin object heuristics
+                thin object heuristics <src>
+        license:
+            MIT License
+
+            Copyright (C) 2016-2021, Intel Corporation 
+
+            Permission is hereby granted, free of charge, to any person obtaining a copy
+            of this software and associated documentation files (the "Software"), to deal
+            in the Software without restriction, including without limitation the rights
+            to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+            copies of the Software, and to permit persons to whom the Software is
+            furnished to do so, subject to the following conditions:
+
+            The above copyright notice and this permission notice shall be included in all
+            copies or substantial portions of the Software.
+
+            THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+            IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+            FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+            AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+            LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+            OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+            SOFTWARE.
     Horizon-Based Indirect Lighting. Benoît "Patapom" Mayaux.
         url:    https://github.com/Patapom/GodComplex/blob/master/Tests/TestHBIL/2018%20Mayaux%20-%20Horizon-Based%20Indirect%20Lighting%20(HBIL).pdf
         credit: interleaved sampling
@@ -63,7 +85,7 @@
                 computeHorizonContribution function <src>
         license:
             Copyright 2020 Alexander Sannikov
-            
+
             Permission is hereby granted, free of charge, to any person obtaining a copy
             of this software and associated documentation files (the "Software"), to deal
             in the Software without restriction, including without limitation the rights
@@ -726,7 +748,7 @@ void PS_Display(
     out float4 color : SV_Target)
 {
     color = tex2D(ReShade::BackBuffer, uv);
-    float4 il_ao = tex2Dlod(samp_il_ao, float4(uv, 1, 0));  // no need for any filter, 3 slices and it's good enough w/ vanilla TAA
+    float4 il_ao = tex2Dlod(samp_il_ao, float4(uv, 1, 0));  // no need for any filter, 2 slices and it's good enough w/ vanilla TAA
     float ao_mult = fAoStrength > 0 ?
         lerp(1, 1 - il_ao.a, fAoStrength) :  // normal mixing
         exp2(il_ao.a * fAoStrength);  // exponential mixing
