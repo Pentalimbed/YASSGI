@@ -335,6 +335,9 @@ sampler samp_bent_normal {Texture = tex_bent_normal;};
 texture tex_il_ao  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 3;};
 sampler samp_il_ao {Texture = tex_il_ao;};
 
+texture tex_il_ao_blur  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 3;};
+sampler samp_il_ao_blur {Texture = tex_il_ao_blur;};
+
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Functions
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -662,7 +665,7 @@ void PS_Display(
     out float4 color : SV_Target)
 {
     color = tex2D(ReShade::BackBuffer, uv);
-    float4 il_ao = tex2Dlod(samp_il_ao, float4(uv, 2, 0));  // no need for any filter, 3 slices and it's good enough w/ vanilla TAA
+    float4 il_ao = tex2Dlod(samp_il_ao_blur, float4(uv, 2, 0));  // no need for any filter, 3 slices and it's good enough w/ vanilla TAA
     float ao_mult = fAoStrength > 0 ?
         lerp(1, 1 - il_ao.a, fAoStrength) :  // normal mixing
         exp2(il_ao.a * fAoStrength);  // exponential mixing
@@ -684,6 +687,17 @@ void PS_Display(
     }
 }
 
+void PS_Blur(
+    in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
+    out float4 color : SV_Target)
+{
+    float4 sum = 0;
+    [unroll] for(int i = -1; i < 2; i += 2)
+        [unroll] for(int j = -1; i < 2; i += 2)
+            sum += tex2Dlod(samp_il_ao, float4(uv + float2(i * BUFFER_RCP_WIDTH, j * BUFFER_RCP_HEIGHT) * 0.5, 2, 0));
+    color = sum / 4;
+}
+
 technique YASSGI_Skyrim
 {
     pass {
@@ -697,6 +711,11 @@ technique YASSGI_Skyrim
         PixelShader = PS_GI;
         RenderTarget0 = tex_il_ao;
         RenderTarget1 = tex_bent_normal;
+    }
+    pass {
+        VertexShader = PostProcessVS;
+        PixelShader = PS_Blur;
+        RenderTarget0 = tex_il_ao_blur;
     }
     pass {
         VertexShader = PostProcessVS;
