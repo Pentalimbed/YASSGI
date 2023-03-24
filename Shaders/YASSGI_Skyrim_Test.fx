@@ -131,7 +131,6 @@ static const float3x3 g_ACEScgToSRGB = float3x3(
 #define g_colorInputMat g_sRGBToACEScg
 #define g_colorOutputMat g_ACEScgToSRGB
 
-
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Uniform Varibales
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -336,17 +335,17 @@ sampler samp_blur_normal_z {Texture = tex_blur_normal_z;};
 texture tex_blur_color  {Width = BUFFER_WIDTH * YASSGI_PREBLUR_SCALE; Height = BUFFER_HEIGHT * YASSGI_PREBLUR_SCALE; Format = RGBA16F; MipLevels = MAX_MIP;};
 sampler samp_blur_color {Texture = tex_blur_color;};
 
-texture tex_bent_normal  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F;};
-sampler samp_bent_normal {Texture = tex_bent_normal;};
+// texture tex_bent_normal  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F;};
+// sampler samp_bent_normal {Texture = tex_bent_normal;};
 
 texture tex_il_ao  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 1;};
 sampler samp_il_ao {Texture = tex_il_ao;};
 
-texture tex_il_ao_ac1  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 1;};
-sampler samp_il_ao_ac1 {Texture = tex_il_ao_ac1;};
+// texture tex_il_ao_ac1  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 1;};
+// sampler samp_il_ao_ac1 {Texture = tex_il_ao_ac1;};
 
-texture tex_il_ao_ac2  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 1;};
-sampler samp_il_ao_ac2 {Texture = tex_il_ao_ac2;};
+// texture tex_il_ao_ac2  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 1;};
+// sampler samp_il_ao_ac2 {Texture = tex_il_ao_ac2;};
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Functions
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -528,13 +527,13 @@ void PS_PreBlur(
 
 void PS_GI(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
-    out float4 il_ao : SV_Target0, out float4 normal_bent : SV_Target1
+    out float4 il_ao : SV_Target0
 )
 {
     float4 temp = 0;  // temp vec for debug
 
     il_ao = 0;
-    normal_bent = 0;
+    // normal_bent = 0;
 
     const uint2 px_coord = uv * BUFFER_SIZE;
 
@@ -662,20 +661,20 @@ void PS_GI(
             side ? h1 : h0 = h;
         }
 
-        // bent normal (Algorithm 2)
-        const float t0 = (6 * sin(h0 - n) - sin(3 * h0 - n) +
-                    6 * sin(h1 - n) - sin(3 * h1 - n) + 
-                    16 * sin(n) - 3 * (sin(h0 + n) + sin(h1 + n))) * 0.083333333333333333333;  // rcp 12
-        const float t1 = (-cos(3 * h0 - n) - cos(3 * h1 - n) +
-                    8 * cos(n) - 3 * (cos(h0 + n) +cos(h1 + n))) * 0.083333333333333333333;
-        const float3 normal_bent_local = float3(dir_px_slice * t0, -t1);
-        normal_bent.rgb += normal_bent_local;
+        // // bent normal (Algorithm 2)
+        // const float t0 = (6 * sin(h0 - n) - sin(3 * h0 - n) +
+        //             6 * sin(h1 - n) - sin(3 * h1 - n) + 
+        //             16 * sin(n) - 3 * (sin(h0 + n) + sin(h1 + n))) * 0.083333333333333333333;  // rcp 12
+        // const float t1 = (-cos(3 * h0 - n) - cos(3 * h1 - n) +
+        //             8 * cos(n) - 3 * (cos(h0 + n) +cos(h1 + n))) * 0.083333333333333333333;
+        // const float3 normal_bent_local = float3(dir_px_slice * t0, -t1);
+        // normal_bent.xyz += normal_bent_local;
     }
 
-    temp = normal_bent.xyz * 0.5 + 0.5;
+    // temp = normal_bent.xyz * 0.5 + 0.5;
 
-    normal_bent.xyz = normalize(normal_bent.xyz);
-    normal_bent.w = 1;
+    // normal_bent.xyz = normalize(normal_bent.xyz);
+    // normal_bent.w = 1;
 
     sum /= iDirCount;
     il_ao.w = clamp(1 - sum.w, 0, 0.95);  // got -inf here...
@@ -683,23 +682,23 @@ void PS_GI(
     // il_ao = temp;
 }
 
-void PS_Accum(
-    in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
-    out float4 il_ao_accum : SV_Target)
-{
-    const uint2 px_coord = uv * BUFFER_SIZE;
+// void PS_Accum(
+//     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
+//     out float4 il_ao_accum : SV_Target)
+// {
+//     const uint2 px_coord = uv * BUFFER_SIZE;
 
-    float4 il_ao_curr = tex2Dfetch(samp_il_ao, px_coord);
-    float4 il_ao_hist = tex2Dfetch(samp_il_ao_ac2, px_coord);
-    il_ao_accum = lerp(il_ao_hist, il_ao_curr, rcp(1 + fDebug));
-}
+//     float4 il_ao_curr = tex2Dfetch(samp_il_ao, px_coord);
+//     float4 il_ao_hist = tex2Dfetch(samp_il_ao_ac2, px_coord);
+//     il_ao_accum = lerp(il_ao_hist, il_ao_curr, rcp(1 + fDebug));
+// }
 
-void PS_AccumCopy(
-    in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
-    out float4 il_ao_hist : SV_Target)
-{
-    il_ao_hist = tex2Dfetch(samp_il_ao_ac1, uv * BUFFER_SIZE);
-}
+// void PS_AccumCopy(
+//     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
+//     out float4 il_ao_hist : SV_Target)
+// {
+//     il_ao_hist = tex2Dfetch(samp_il_ao_ac1, uv * BUFFER_SIZE);
+// }
 
 void PS_Display(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
@@ -742,7 +741,6 @@ technique YASSGI_Skyrim
         VertexShader = PostProcessVS;
         PixelShader = PS_GI;
         RenderTarget0 = tex_il_ao;
-        RenderTarget1 = tex_bent_normal;
     }
     // pass {
     //     VertexShader = PostProcessVS;
