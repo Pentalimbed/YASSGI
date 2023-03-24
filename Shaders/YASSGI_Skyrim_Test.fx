@@ -302,10 +302,10 @@ uniform float fThinOccluderCompensation <
 > = 0.7;
 
 uniform float fLightSrcThres <
-	ui_type = "slider";
+    ui_type = "slider";
     ui_label = "Light Source Threshold";
     ui_tooltip = "Only pixels brighter than this are considered light-emitting.";
-	ui_category = "Visual";
+    ui_category = "Visual";
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
 > = 0.1;
@@ -399,7 +399,7 @@ sampler samp_il_ao {Texture = tex_il_ao;};
 
 float3 unpackNormal(float2 enc)
 {
-	float2 fenc = enc * 4 - 2;
+    float2 fenc = enc * 4 - 2;
     float f = dot(fenc, fenc);
     float g = sqrt(1 - f * 0.25);
     float3 n = float3(fenc * g, 1 - f * 0.5);
@@ -520,9 +520,9 @@ float ilIntegral(float nx, float ny, float cos_prev, float cos_new)
 
 float computeHorizonContribution(float3 eyeDir, float3 eyeTangent, float3 viewNorm, float minAngle, float maxAngle)
 {
-  return
-    +0.25 * dot(eyeDir, viewNorm) * (- cos(2.0 * maxAngle) + cos(2.0 * minAngle))
-    +0.25 * dot(eyeTangent, viewNorm) * (2.0 * maxAngle - 2.0 * minAngle - sin(2.0 * maxAngle) + sin(2.0 * minAngle));
+    return
+        +0.25 * dot(eyeDir, viewNorm) * (- cos(2.0 * maxAngle) + cos(2.0 * minAngle))
+        +0.25 * dot(eyeTangent, viewNorm) * (2.0 * maxAngle - 2.0 * minAngle - sin(2.0 * maxAngle) + sin(2.0 * minAngle));
 }
 
 float luminance(float3 color)
