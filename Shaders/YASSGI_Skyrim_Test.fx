@@ -145,6 +145,9 @@ uniform float4x4 fViewMatrix        < source = "ViewMatrix"; >;
 uniform float4x4 fProjMatrix        < source = "ProjMatrix"; >;
 uniform float4x4 fViewProjMatrix    < source = "ViewProjMatrix"; >;
 uniform float4x4 fInvViewProjMatrix < source = "InvViewProjMatrix"; >;
+uniform float4x4 fProjMatrixJit        < source = "ProjMatrix Jittered"; >;
+uniform float4x4 fViewProjMatrixJit    < source = "ViewProjMatrix Jittered"; >;
+uniform float4x4 fInvViewProjMatrixJit < source = "InvViewProjMatrix Jittered"; >;
 
 uniform float fFov < source = "FieldOfView"; >;
 uniform float3 fCamPos < source = "Position"; >;
@@ -286,14 +289,6 @@ uniform float fAlbedoNorm <
     ui_step = 0.01;
 > = 0.8;
 
-uniform float fIlStrength <
-    ui_type = "slider";
-    ui_category = "Mixing";
-    ui_label = "IL";
-    ui_min = 0.0; ui_max = 3.0;
-    ui_step = 0.01;
-> = 2.0;
-
 uniform float fAoStrength <
     ui_type = "slider";
     ui_category = "Mixing";
@@ -302,6 +297,14 @@ uniform float fAoStrength <
     ui_min = -2.0; ui_max = 1.0;
     ui_step = 0.01;
 > = -1.5;
+
+uniform float fIlStrength <
+    ui_type = "slider";
+    ui_category = "Mixing";
+    ui_label = "IL";
+    ui_min = 0.0; ui_max = 3.0;
+    ui_step = 0.01;
+> = 2.0;
 
 }
 
@@ -367,17 +370,17 @@ float rawZToLinear01(float raw_z)
 float3 uvzToWorld(float2 uv, float raw_z)
 {
     float4 pos_s = float4((uv * 2 - 1) * float2(1, -1) * raw_z, raw_z, 1);
-    float4 pos = mul(transpose(fInvViewProjMatrix), pos_s);
+    float4 pos = mul(transpose(fInvViewProjMatrixJit), pos_s);
     return pos.xyz / pos.w;
 }
 float3 uvzToView(float2 uv, float raw_z)
 {
-    float4x4 inv_proj = mul(fInvViewProjMatrix, fViewMatrix);
+    float4x4 inv_proj = mul(fInvViewProjMatrixJit, fViewMatrix);
     float4 pos_view = mul(transpose(inv_proj), float4((uv * 2 - 1) * float2(1, -1) * raw_z, raw_z, 1));
     return pos_view.xyz / pos_view.w;
 }
 float3 viewToUvz(float3 pos){
-    float4 pos_clip = mul(transpose(fProjMatrix), float4(pos, 1));
+    float4 pos_clip = mul(transpose(fProjMatrixJit), float4(pos, 1));
     pos_clip.xyz /= pos_clip.w;
     pos_clip.xy = (pos_clip.xy / pos_clip.z * float2(1, -1) + 1) * 0.5;
     return pos_clip.xyz;
@@ -483,6 +486,16 @@ float luminance(float3 color)
     return dot(color, float3(0.21267291505, 0.71515223009, 0.07217499918));
 }
 
+float3 giPolyFit(float3 albedo, float visibility)
+{
+    float3 a = 2.0404 * albedo - 0.3324;
+    float3 b = 4.7951 * albedo - 0.6417;
+    float3 c = 2.7552 * albedo + 0.6903;
+    float vis2 = visibility * visibility;
+    float vis3 = vis2 * visibility;
+    return a * vis3 - b * vis2 + c * visibility;
+}
+
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Pixel Shaders
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -538,16 +551,16 @@ void PS_GI(
     
     const uint3 rand = pcg3d(uint3(px_coord, iFrameCount));
     const float4 blue = tex2Dfetch(samp_blue, (px_coord + rand.xy) % NOISE_SIZE);
-    // interleaved sampling (enough for ao)
-    uint2 px_coord_shifted = px_coord + blue.xy * 8;  // de-grid
-    const uint px_idx = (dot(px_coord_shifted % INTERLEAVED_SIZE_PX, uint2(1, INTERLEAVED_SIZE_PX)) + (iFrameCount % 16)) % 16;
-    const float2 distrib = hammersley(px_idx, INTERLEAVED_SIZE_PX * INTERLEAVED_SIZE_PX);
-    // ^^^ x for angle, y for stride
+    // // interleaved sampling (enough for ao)
+    // uint2 px_coord_shifted = px_coord + blue.xy * 8;  // de-grid
+    // const uint px_idx = (dot(px_coord_shifted % INTERLEAVED_SIZE_PX, uint2(1, INTERLEAVED_SIZE_PX)) + (iFrameCount % 16)) % 16;
+    // const float2 distrib = hammersley(px_idx, INTERLEAVED_SIZE_PX * INTERLEAVED_SIZE_PX);
+    // // ^^^ x for angle, y for stride
 
     // some consts
     const float rcp_dir_count = 1.0 / iDirCount;
     const float angle_sector = PI * rcp_dir_count;  // may confuse with bitmask il sectors; angle_increment? angle_pizza_slice?
-    const float stride_px = max(1, fBaseStridePx * (0.5 + distrib.y + blue.z * fStrideJitter));
+    const float stride_px = max(1, fBaseStridePx * (0.5 + blue.x * fStrideJitter));
     const float log2_stride_px = log2(stride_px);
     const float falloff_start_px = fFxRange * (1 - fFxFalloff);
     const float falloff_mul = -rcp(fFxRange);
@@ -559,7 +572,7 @@ void PS_GI(
     for(uint idx_dir = 0; idx_dir < iDirCount; ++idx_dir)
     {
         // slice directions
-        const float angle_slice = (idx_dir + distrib.x) * angle_sector;
+        const float angle_slice = (idx_dir + blue.y) * angle_sector;
         float2 dir_px_slice; sincos(angle_slice, dir_px_slice.y, dir_px_slice.x);  // <-sincos here!
         const float2 dir_uv_slice = normalize(dir_px_slice * float2(BUFFER_WIDTH * BUFFER_RCP_HEIGHT, 1));
 
@@ -665,8 +678,8 @@ void PS_GI(
     normal_bent.w = 1;
 
     sum /= iDirCount;
-    il_ao.rgb = sum.rgb;
     il_ao.w = clamp(1 - sum.w, 0, 0.95);  // got -inf here...
+    il_ao.rgb = sum.rgb;
     // il_ao = temp;
 }
 
