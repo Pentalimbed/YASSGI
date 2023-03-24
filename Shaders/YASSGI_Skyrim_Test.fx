@@ -118,13 +118,15 @@
 */
 /*  TODO
 
-    - il
-    o bent normal
+    - pending o finished x canceled * shelved
+
+    o il
+    * bent normal
     o thickness heuristic
     - alternative bitmask impl (?)
     - hi-z buffer w/ cone tracing (?)
-    - remove subtle grid like pattern
-    - ibl
+    o remove subtle grid like pattern
+    * ibl
 */
 
 #include "ReShade.fxh"
