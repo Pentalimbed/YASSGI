@@ -113,6 +113,10 @@ namespace YASSGI_SKYRIM
 #   define YASSGI_PREBLUR_SCALE 0.25
 #endif
 
+#ifndef YASSGI_DISABLE_IL
+#   define YASSGI_DISABLE_IL 0
+#endif
+
 static const float3x3 g_sRGBToACEScg = float3x3(
     0.613117812906440,  0.341181995855625,  0.045787344282337,
     0.069934082307513,  0.918103037508582,  0.011932775530201,
@@ -335,9 +339,6 @@ sampler samp_bent_normal {Texture = tex_bent_normal;};
 texture tex_il_ao  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 3;};
 sampler samp_il_ao {Texture = tex_il_ao;};
 
-texture tex_il_ao_blur  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 3;};
-sampler samp_il_ao_blur {Texture = tex_il_ao_blur;};
-
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Functions
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -529,19 +530,22 @@ void PS_GI(
     [branch]
     if(isWeapon(pos_v.z) || isSky(pos_v.z))  // leave sky alone
         return;
-
+    
+    const uint3 rand = pcg3d(uint3(px_coord, iFrameCount));
+    const float3 randf = rand / MAX_UINT_F;
     // interleaved sampling (enough for ao)
-    const uint2 px_coord_shifted = px_coord + (iFrameCount % 4) * uint2((iFrameCount % 8 < 4) * 2 - 1, 1);  // de-grid
+    uint2 px_coord_shifted = px_coord + (iFrameCount % 4) * uint2((iFrameCount % 8 < 4) * 2 - 1, 1);  // de-grid
+    px_coord_shifted.x = rand.x % 2 ? BUFFER_WIDTH - px_coord_shifted.x : px_coord_shifted.x;
+    px_coord_shifted.y = rand.x % 4 < 2 ? BUFFER_HEIGHT - px_coord_shifted.y : px_coord_shifted.y;
+    px_coord_shifted = rand.y % 2 ? px_coord_shifted.yx : px_coord_shifted;
     const uint px_idx = (dot(px_coord_shifted % INTERLEAVED_SIZE_PX, uint2(1, INTERLEAVED_SIZE_PX)) + (iFrameCount % 16)) % 16;
     const float2 distrib = hammersley(px_idx, INTERLEAVED_SIZE_PX * INTERLEAVED_SIZE_PX);
     // ^^^ x for angle, y for stride
-    const uint3 rand = pcg3d(uint3(px_coord, iFrameCount));
-    const float3 randf = rand / MAX_UINT_F;
 
     // some consts
     const float rcp_dir_count = 1.0 / iDirCount;
     const float angle_sector = PI * rcp_dir_count;  // may confuse with bitmask il sectors; angle_increment? angle_pizza_slice?
-    const float stride_px = max(1, fBaseStridePx * (0.5 + distrib.y + randf.x * fStrideJitter));
+    const float stride_px = max(1, fBaseStridePx * (0.5 + distrib.y + randf.z * fStrideJitter));
     const float log2_stride_px = log2(stride_px);
     const float falloff_start_px = fFxRange * (1 - fFxFalloff);
     const float falloff_mul = -rcp(fFxRange);
@@ -608,6 +612,9 @@ void PS_GI(
                     float hor_cos_sample = dot(dir_v_hor, dir_v_view);
                     hor_cos_sample = lerp(min_hor_cos, hor_cos_sample, weight);
 
+#if YASSGI_DISABLE_IL
+                    hor_cos = max(hor_cos, hor_cos_sample);
+#else
                     [branch]
                     if(hor_cos_sample > hor_cos)
                     {
@@ -626,6 +633,7 @@ void PS_GI(
 
                         hor_cos = hor_cos_sample;
                     }
+#endif
                 }
 
                 dist_px += stride_px * exp2(step * fSpreadExp);
@@ -665,7 +673,7 @@ void PS_Display(
     out float4 color : SV_Target)
 {
     color = tex2D(ReShade::BackBuffer, uv);
-    float4 il_ao = tex2Dlod(samp_il_ao_blur, float4(uv, 2, 0));  // no need for any filter, 3 slices and it's good enough w/ vanilla TAA
+    float4 il_ao = tex2Dlod(samp_il_ao, float4(uv, 2, 0));  // no need for any filter, 3 slices and it's good enough w/ vanilla TAA
     float ao_mult = fAoStrength > 0 ?
         lerp(1, 1 - il_ao.a, fAoStrength) :  // normal mixing
         exp2(il_ao.a * fAoStrength);  // exponential mixing
@@ -687,17 +695,6 @@ void PS_Display(
     }
 }
 
-void PS_Blur(
-    in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
-    out float4 color : SV_Target)
-{
-    float4 sum = 0;
-    [unroll] for(int i = -1; i < 2; i += 2)
-        [unroll] for(int j = -1; i < 2; i += 2)
-            sum += tex2Dlod(samp_il_ao, float4(uv + float2(i * BUFFER_RCP_WIDTH, j * BUFFER_RCP_HEIGHT) * 0.5, 2, 0));
-    color = sum / 4;
-}
-
 technique YASSGI_Skyrim
 {
     pass {
@@ -711,11 +708,6 @@ technique YASSGI_Skyrim
         PixelShader = PS_GI;
         RenderTarget0 = tex_il_ao;
         RenderTarget1 = tex_bent_normal;
-    }
-    pass {
-        VertexShader = PostProcessVS;
-        PixelShader = PS_Blur;
-        RenderTarget0 = tex_il_ao_blur;
     }
     pass {
         VertexShader = PostProcessVS;
