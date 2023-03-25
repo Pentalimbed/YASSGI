@@ -336,10 +336,10 @@ uniform float fAlbedoSatPower <
     ui_type = "slider";
     ui_category = "Visual";
     ui_label = "Albedo Saturation Power";
-    ui_tooltip = "Since ReShade has no way of knowing the true albedo of a surface separate from lighting,\n"
+    ui_tooltip = "Since ReShade has no way of knowing the true albedo of a surface separate fq2rom lighting,\n"
         "any shader has to guess. A value of 0.0 tells the shader that everything is monochrome, and its\n"
         "hue is the result of lighting. Greater value yields more saturated output on colored surfaces.\n";
-    ui_min = 0.0; ui_max = 10.0;
+    ui_min = 0.0; ui_max = 8.0;
     ui_step = 0.01;
 > = 1.0;
 
@@ -350,7 +350,7 @@ uniform float fAlbedoNorm <
     ui_tooltip = "Since ReShade has no way of knowing the true albedo of a surface separate from lighting,\n"
         "any shader has to guess. A value of 0.0 tells the shader that there is no lighting in the scene,\n"
         "so dark surfaces are actually black. 1.0 says that all surfaces are in fact colored brightly, and\n"
-        "the variation in brightness are the result of illumination, rather than the texture pattern itself.";
+        "variation in brightness is the result of illumination, rather than the texture pattern itself.";
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
 > = 0.8;
@@ -372,6 +372,14 @@ uniform float fDisocclThres <
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
 > = 0.5;
+
+uniform float fEdgeThres <
+    ui_type = "slider";
+    ui_category = "Filter";
+    ui_label = "Edge Detection Threshold";
+    ui_min = 0.0; ui_max = 50.0;
+    ui_step = 1.0;
+> = 10;
 
 uniform float fBlurRadius <
     ui_type = "slider";
@@ -604,6 +612,18 @@ float3 giPolyFit(float3 albedo, float visibility)
     return a * vis3 - b * vis2 + c * visibility;
 }
 
+bool isEdge(uint2 px_coord, float z)
+{
+    int2 four_neighbors[4] = {int2(-1,0), int2(1,0), int2(0,-1), int2(0,1)};
+    for(uint i = 0; i < 4; ++i)
+    {
+        float z_sample = rawZToLinear01(tex2Dfetch(Skyrim::samp_depth, px_coord + four_neighbors[i])) * fFarPlane;
+        if(abs(z_sample - z) > fEdgeThres)
+            return true;
+    }
+    return false;
+}
+
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Pixel Shaders
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -832,10 +852,11 @@ void PS_Accum(
     const float4 il_ao_prev = tex2D(samp_il_ao_ac_prev, uv_prev);
     
     // disocclusion
+    bool is_edge = isEdge(px_coord, z_curr);
     const float delta = abs(z_curr - z_prev) / z_curr * abs(dot(normal_curr, normalize(uvzToView(uv, raw_z_curr))));
     const bool occluded = delta > fDisocclThres * 0.1;
     
-    temporal = min(hist_len_prev * (!occluded) + 1, iMaxAccumFrames);
+    temporal = min(hist_len_prev * (is_edge || !occluded) + 1, iMaxAccumFrames);
     il_ao_accum = lerp(il_ao_curr, il_ao_prev, (1 - rcp(temporal)) * (!occluded));
 }
 
@@ -875,8 +896,6 @@ void PS_Filter(
             const float depth_sample = rawZToLinear01(tex2Dlod(Skyrim::samp_depth, float4(uv_sample, 0, 0)).x);
             const float z_sample = depth_sample * fFarPlane;
             const float3 normal_sample = unpackNormal(tex2Dlod(Skyrim::samp_normal, float4(uv_sample, 0, 0)).xy);
-
-            // not doing edge detection since TAA will handle that
             
             [branch]
             if(isSky(z_sample) || isWeapon(z_sample))  // nan?
