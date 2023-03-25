@@ -126,7 +126,7 @@
 */
 /*  TODO
 
-    - pending o finished x canceled * shelved
+    - pending  o finished  x canceled  * shelved
 
     o il
     * bent normal
@@ -136,6 +136,7 @@
     o remove subtle grid like pattern
     * ibl
     - adaptive light src thres (?)
+    - simple geometric light src
 */
 
 #include "ReShade.fxh"
@@ -164,6 +165,7 @@ namespace YASSGI_SKYRIM
 #define INTERLEAVED_SIZE_PX 4
 #define MAX_MIP 8
 
+
 #ifndef YASSGI_PREBLUR_SCALE
 #   define YASSGI_PREBLUR_SCALE 0.25
 #endif
@@ -175,6 +177,7 @@ namespace YASSGI_SKYRIM
 #ifndef YASSGI_DISABLE_FILTER
 #   define YASSGI_DISABLE_FILTER 0
 #endif
+
 
 static const float3x3 g_sRGBToACEScg = float3x3(
     0.613117812906440,  0.341181995855625,  0.045787344282337,
@@ -426,8 +429,8 @@ sampler samp_blue                              {Texture = tex_blue;};
 texture tex_blur_geo  {Width = BUFFER_WIDTH * YASSGI_PREBLUR_SCALE; Height = BUFFER_HEIGHT * YASSGI_PREBLUR_SCALE; Format = RGBA32F; MipLevels = MAX_MIP;};
 sampler samp_blur_geo {Texture = tex_blur_geo;};
 
-texture tex_blur_color  {Width = BUFFER_WIDTH * YASSGI_PREBLUR_SCALE; Height = BUFFER_HEIGHT * YASSGI_PREBLUR_SCALE; Format = RGBA16F; MipLevels = MAX_MIP;};
-sampler samp_blur_color {Texture = tex_blur_color;};
+texture tex_blur_radiance  {Width = BUFFER_WIDTH * YASSGI_PREBLUR_SCALE; Height = BUFFER_HEIGHT * YASSGI_PREBLUR_SCALE; Format = RGBA16F; MipLevels = MAX_MIP;};
+sampler samp_blur_radiance {Texture = tex_blur_radiance;};
 
 // texture tex_bent_normal  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F;};
 // sampler samp_bent_normal {Texture = tex_bent_normal;};
@@ -607,7 +610,7 @@ float3 giPolyFit(float3 albedo, float visibility)
 
 void PS_PreBlur(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
-    out float4 blur_geo : SV_Target0, out float4 blur_color : SV_Target1
+    out float4 blur_geo : SV_Target0, out float4 blur_radiance : SV_Target1
 )
 {
     float3 sum_normal = unpackNormal(tex2D(Skyrim::samp_normal, uv).xy);
@@ -628,7 +631,7 @@ void PS_PreBlur(
         sum_w += w;
     }
     blur_geo = float4(sum_normal, sum_z) / sum_w;
-    blur_color = float4(sum_color / sum_w, 1);
+    blur_radiance = float4(sum_color / sum_w, 1);
 }
 
 void PS_GI(
@@ -740,7 +743,7 @@ void PS_GI(
                     [branch]
                     if(hor_cos_sample > hor_cos)
                     {
-                        float3 radiance_sample_new = tex2Dlod(samp_blur_color, float4(uv_sample, mip_level, 0)).rgb;
+                        float3 radiance_sample_new = tex2Dlod(samp_blur_radiance, float4(uv_sample, mip_level, 0)).rgb;
                         radiance_sample_new = luminance(radiance_sample_new) > fLightSrcThres ? radiance_sample_new : 0;
                         // radiance_sample_new *= ilIntegral(cos_n * side_sign, sin_n, hor_cos, hor_cos_sample);
                         radiance_sample_new *= computeHorizonContribution(dir_v_view, dir_v_slice_local, normal_v, acosFast4(hor_cos_sample), acosFast4(hor_cos));
@@ -890,7 +893,7 @@ void PS_Filter(
             
     il_ao_blur = sum / weightsum;
 }
-#endif  // Disable filter
+#endif  // YASSGI_DISABLE_FILTER == 0
 
 void PS_Display(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
@@ -935,7 +938,7 @@ technique YASSGI_Skyrim
         VertexShader = PostProcessVS;
         PixelShader = PS_PreBlur;
         RenderTarget0 = tex_blur_geo;
-        RenderTarget1 = tex_blur_color;
+        RenderTarget1 = tex_blur_radiance;
     }
     pass {
         VertexShader = PostProcessVS;
