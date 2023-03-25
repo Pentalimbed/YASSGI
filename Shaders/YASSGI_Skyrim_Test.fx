@@ -319,6 +319,7 @@ uniform float fThinOccluderCompensation <
     ui_step = 0.01;
 > = 0.7;
 
+#if YASSGI_DISABLE_IL == 0
 uniform float fLightSrcThres <
     ui_type = "slider";
     ui_label = "Light Source Threshold";
@@ -350,6 +351,7 @@ uniform float fAlbedoNorm <
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
 > = 0.8;
+#endif
 
 #if YASSGI_DISABLE_FILTER == 0
 uniform int iMaxAccumFrames <
@@ -492,12 +494,14 @@ bool isFar(float z){return z > fFarPlane;}
 bool isWeapon(float z){return z < fZRange.x;}
 bool isSky(float z){return z > fZRange.y;}
 
+#if YASSGI_DISABLE_IL == 0
 float3 fakeAlbedo(float3 color)
 {
     float3 albedo = pow(max(0, color), fAlbedoSatPower * length(color));  // length(color) suppress saturation of darker colors
     albedo = saturate(lerp(albedo, normalize(albedo), fAlbedoNorm));
     return albedo;
 }
+#endif
 
 // <---- Sampling ---->
 
@@ -640,7 +644,9 @@ void PS_GI(
     const uint2 px_coord = uv * BUFFER_SIZE;
 
     const float3 color = mul(g_colorInputMat, tex2Dfetch(ReShade::BackBuffer, px_coord).rgb);
+#if YASSGI_DISABLE_IL == 0
     const float3 albedo = fakeAlbedo(color);
+#endif
     const float3 normal_v = unpackNormal(tex2Dfetch(Skyrim::samp_normal, px_coord).xy);
     const float raw_z = tex2Dfetch(Skyrim::samp_depth, px_coord).x;
     const float3 pos_v = uvzToView(uv, raw_z) * 0.99995;  // closer to the screen bc we're using blurred geometry
