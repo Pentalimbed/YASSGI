@@ -813,6 +813,15 @@ void PS_Accum(
     const float raw_z_prev = temporal_prev.y;
     const float z_curr = rawZToLinear01(raw_z_curr) * fFarPlane;
     const float z_prev = rawZToLinear01(raw_z_prev) * fFarPlane;
+
+    [branch]
+    if(isSky(z_curr))
+    {
+        il_ao_accum = 0;
+        temporal = 1;
+        return;
+    }
+
     const float3 normal_curr = unpackNormal(tex2Dfetch(Skyrim::samp_normal, px_coord).xy);
     // const float3 normal_prev = unpackNormal(temporal_prev.zw);
 
@@ -846,23 +855,32 @@ void PS_Filter(
     const uint2 px_coord = uv * BUFFER_SIZE;
 
     const float depth = rawZToLinear01(tex2Dfetch(Skyrim::samp_depth, px_coord).x);
+    const float z = depth * fFarPlane;
+    [branch]
+    if(isSky(z) || isWeapon(z))
+    {
+        il_ao_blur = 0;
+        return;
+    }
+
     const float3 normal = unpackNormal(tex2Dfetch(Skyrim::samp_normal, px_coord).xy);
     const float2 zgrad = float2(ddx(depth), ddy(depth));
 
     float4 sum = tex2Dlod(samp_il_ao_ac, float4(uv, 1, 0));
     float weightsum = 1;
-    for(int i = -1; i <= 1; i += 2)
-        for(int j = -1; j <= 1; j += 2)
+    [unroll] for(int i = -1; i <= 1; i += 2)
+        [unroll] for(int j = -1; j <= 1; j += 2)
         {
             const int2 offset_px = int2(i, j);
             const float2 uv_sample = uv + offset_px.xy * fBlurRadius * PIXEL_UV_SIZE;
 
             const float depth_sample = rawZToLinear01(tex2D(Skyrim::samp_depth, uv_sample).x);
+            const float z_sample = depth_sample * fFarPlane;
             const float3 normal_sample = unpackNormal(tex2D(Skyrim::samp_normal, uv_sample).xy);
 
             // not doing edge detection since TAA will handle that
             
-            float w =  isInScreen(uv_sample);
+            float w = isInScreen(uv_sample) && !(isSky(z_sample) || isWeapon(z_sample));
             w *= pow(max(0, dot(normal, normal_sample)), 64);                                          // normal
             w *= exp(-abs(depth - depth_sample) / (1 * abs(dot(zgrad, offset_px.xy * fBlurRadius)) + EPS)); // depth
             // w *= exp(-abs(lum_curr - lum[i]) / (fVarianceWeight * variance + EPS));                 // luminance
