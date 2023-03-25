@@ -360,15 +360,15 @@ uniform int iMaxAccumFrames <
     ui_label = "Max Accumulated Frames";
     ui_min = 1; ui_max = 64;
     ui_step = 1;
-> = 24;
+> = 12;
 
 uniform float fDisocclThres <
     ui_type = "slider";
     ui_category = "Filter";
     ui_label = "Disocclusion Threshold";
-    ui_min = 0.0; ui_max = 2.0;
+    ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
-> = 1.0;
+> = 0.5;
 
 uniform float fBlurRadius <
     ui_type = "slider";
@@ -809,8 +809,10 @@ void PS_Accum(
     const float4 temporal_prev = tex2D(samp_temporal_geo_prev, uv_prev);
     const float hist_len_prev = temporal_prev.x;
 
-    const float z_curr = rawZToLinear01(tex2Dfetch(Skyrim::samp_depth, px_coord).x) * fFarPlane;
-    const float z_prev = rawZToLinear01(temporal_prev.y) * fFarPlane;
+    const float raw_z_curr = tex2Dfetch(Skyrim::samp_depth, px_coord).x;
+    const float raw_z_prev = temporal_prev.y;
+    const float z_curr = rawZToLinear01(raw_z_curr) * fFarPlane;
+    const float z_prev = rawZToLinear01(raw_z_prev) * fFarPlane;
     const float3 normal_curr = unpackNormal(tex2Dfetch(Skyrim::samp_normal, px_coord).xy);
     // const float3 normal_prev = unpackNormal(temporal_prev.zw);
 
@@ -818,8 +820,8 @@ void PS_Accum(
     const float4 il_ao_prev = tex2D(samp_il_ao_ac_prev, uv_prev);
     
     // disocclusion
-    const float delta = abs(z_curr - z_prev) * abs(dot(normal_curr, normalize(uvzToView(uv, z_curr))));  // geometry: compare deviation of plane instead of point
-    const bool occluded = delta > fDisocclThres;
+    const float delta = abs(z_curr - z_prev) / z_curr * abs(dot(normal_curr, normalize(uvzToView(uv, raw_z_curr))));
+    const bool occluded = delta > fDisocclThres * 0.1;
     
     temporal = min(hist_len_prev * (!occluded) + 1, iMaxAccumFrames);
     il_ao_accum = lerp(il_ao_curr, il_ao_prev, (1 - rcp(temporal)) * (!occluded));
