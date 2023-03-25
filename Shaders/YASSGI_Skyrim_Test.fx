@@ -106,6 +106,11 @@
     ReBLUR: A Hierarchical Recurrent Denoiser, Ray Tracing Gems II. Dmitry Zhdan, NVIDIA.
         url:    https://link.springer.com/book/10.1007/978-1-4842-7185-8
         credit: disocclusion by geometry
+    Spatiotemporal Variance-Guided Filtering: Real-Time Reconstruction for Path-Traced Global Illumination. 
+     Christoph Schied, Anton Kaplanyan, Chris Wyman, Anjul Patney, Chakravarty R. Alla Chaitanya, John Burgess,
+     Shiqiu Liu, Carsten Dachsbacher, Aaron Lefohn, Marco Salvi
+        url:    https://research.nvidia.com/sites/default/files/pubs/2017-07_Spatiotemporal-Variance-Guided-Filtering%3A//svgf_preprint.pdf
+        credit: spatial filter weight calculation
 */
 /*  NOTATION
 
@@ -130,6 +135,7 @@
     - hi-z buffer w/ cone tracing (?)
     o remove subtle grid like pattern
     * ibl
+    - adaptive light src thres (?)
 */
 
 #include "ReShade.fxh"
@@ -845,6 +851,8 @@ void PS_Filter(
 
             const float depth_sample = rawZToLinear01(tex2D(Skyrim::samp_depth, uv_sample).x);
             const float3 normal_sample = unpackNormal(tex2D(Skyrim::samp_normal, uv_sample).xy);
+
+            // not doing edge detection since TAA will handle that
             
             float w =  isInScreen(uv_sample);
             w *= pow(max(0, dot(normal, normal_sample)), 64);                                          // normal
