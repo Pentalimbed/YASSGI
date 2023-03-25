@@ -840,49 +840,55 @@ void PS_Filter(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
     out float4 il_ao_blur : SV_Target0, out float4 temporal : SV_Target1)
 {
+    il_ao_blur = 0;
+
     const uint2 px_coord = uv * BUFFER_SIZE;
+
+    temporal.x = tex2Dfetch(samp_temporal, px_coord).x;
+    temporal.y = tex2Dfetch(Skyrim::samp_depth, px_coord).x;
+    temporal.zw = tex2Dfetch(Skyrim::samp_normal, px_coord).xy;
 
     const float depth = rawZToLinear01(tex2Dfetch(Skyrim::samp_depth, px_coord).x);
     const float z = depth * fFarPlane;
     [branch]
     if(isSky(z) || isWeapon(z))
-    {
-        il_ao_blur = 0;
         return;
-    }
 
+    const float2 zgrad = float2(ddx(z), ddy(z));
     const float3 normal = unpackNormal(tex2Dfetch(Skyrim::samp_normal, px_coord).xy);
-    const float2 zgrad = float2(ddx(depth), ddy(depth));
-
+    
     float4 sum = tex2Dlod(samp_il_ao_ac, float4(uv, 1, 0));
     float weightsum = 1;
-    [unroll] for(int i = -1; i <= 1; i += 2)
-        [unroll] for(int j = -1; j <= 1; j += 2)
+    for(int i = -1; i <= 1; i += 2)
+        for(int j = -1; j <= 1; j += 2)
         {
             const int2 offset_px = int2(i, j);
             const float2 uv_sample = uv + offset_px.xy * fBlurRadius * PIXEL_UV_SIZE;
 
-            const float depth_sample = rawZToLinear01(tex2D(Skyrim::samp_depth, uv_sample).x);
+            [branch]
+            if(!isInScreen(uv_sample))
+                continue;
+
+            const float depth_sample = rawZToLinear01(tex2Dlod(Skyrim::samp_depth, float4(uv_sample, 0, 0)).x);
             const float z_sample = depth_sample * fFarPlane;
-            const float3 normal_sample = unpackNormal(tex2D(Skyrim::samp_normal, uv_sample).xy);
+            const float3 normal_sample = unpackNormal(tex2Dlod(Skyrim::samp_normal, float4(uv_sample, 0, 0)).xy);
 
             // not doing edge detection since TAA will handle that
             
-            float w = isInScreen(uv_sample) && !(isSky(z_sample) || isWeapon(z_sample));
-            w *= pow(max(0, dot(normal, normal_sample)), 64);                                          // normal
-            w *= exp(-abs(depth - depth_sample) / (1 * abs(dot(zgrad, offset_px.xy * fBlurRadius)) + EPS)); // depth
-            // w *= exp(-abs(lum_curr - lum[i]) / (fVarianceWeight * variance + EPS));                 // luminance
-            w = saturate(w) * exp(-0.66 * length(offset_px));                                          // gaussian kernel
+            [branch]
+            if(isSky(z_sample) || isWeapon(z_sample))  // nan?
+                continue;
+
+            float w = pow(max(EPS, dot(normal, normal_sample)), 64);                                // normal
+            w *= exp(-abs(z - z_sample) / (1 * abs(dot(zgrad, offset_px.xy * fBlurRadius)) + EPS)); // depth
+            // w *= exp(-abs(lum_curr - lum[i]) / (fVarianceWeight * variance + EPS));              // luminance
+            w = saturate(w) * exp(-0.66 * length(offset_px));                                       // gaussian kernel
 
             weightsum += w;
             sum += tex2Dlod(samp_il_ao_ac, float4(uv_sample, 1, 0)) * w;
         }
             
     il_ao_blur = sum / weightsum;
-
-    temporal.x = tex2Dfetch(samp_temporal, px_coord).x;
-    temporal.y = tex2Dfetch(Skyrim::samp_depth, px_coord).x;
-    temporal.zw = tex2Dfetch(Skyrim::samp_normal, px_coord).xy;
 }
 #endif  // Disable filter
 
