@@ -261,7 +261,7 @@ uniform float fSpreadExp <
     ui_label = "Spread Exponent";
     ui_min = 0.0; ui_max = 3.0;
     ui_step = 0.01;
-> = 2;
+> = 2.5;
 
 uniform float fStrideJitter <
     ui_type = "slider";
@@ -269,7 +269,7 @@ uniform float fStrideJitter <
     ui_label = "Stride Jitter";
     ui_min = 0; ui_max = 1;
     ui_step = 0.01;
-> = 0.3;
+> = 0.66;
 
 uniform float fMaxSampleDistPx <
     ui_type = "slider";
@@ -309,7 +309,7 @@ uniform float fFxFalloff <
     ui_label = "Effect Falloff";
     ui_min = 0; ui_max = 1.0;
     ui_step = 0.001;
-> = 0.7;
+> = 0.6;
 
 uniform float fThinOccluderCompensation <
     ui_type = "slider";
@@ -326,7 +326,7 @@ uniform float fLightSrcThres <
     ui_category = "Visual";
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
-> = 0.1;
+> = 0.0;
 
 uniform float fAlbedoSatPower <
     ui_type = "slider";
@@ -364,9 +364,9 @@ uniform float fDisocclThres <
     ui_type = "slider";
     ui_category = "Filter";
     ui_label = "Disocclusion Threshold";
-    ui_min = 0.0; ui_max = 1.0;
+    ui_min = 0.0; ui_max = 2.0;
     ui_step = 0.01;
-> = 0.5;
+> = 1.0;
 
 uniform float fBlurRadius <
     ui_type = "slider";
@@ -392,7 +392,7 @@ uniform float fIlStrength <
     ui_label = "IL";
     ui_min = 0.0; ui_max = 3.0;
     ui_step = 0.01;
-> = 2.0;
+> = 1.5;
 
 }
 
@@ -876,7 +876,7 @@ void PS_Display(
 #if YASSGI_DISABLE_FILTER == 0
     float4 il_ao = tex2Dlod(samp_il_ao_ac_prev, float4(uv, 1, 0));
 #else
-    float4 il_ao = tex2Dlod(samp_il_ao, float4(uv, 1, 0));  // ao w/ 2 slices and it's good enough w/ vanilla TAA
+    float4 il_ao = tex2Dlod(samp_il_ao, float4(uv, 1, 0));  // 2 slices and it's good enough for ao w/ vanilla TAA
 #endif
     float ao_mult = fAoStrength > 0 ?
         lerp(1, 1 - il_ao.a, fAoStrength) :  // normal mixing
