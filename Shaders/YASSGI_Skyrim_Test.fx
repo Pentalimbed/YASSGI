@@ -277,7 +277,7 @@ uniform float fMaxSampleDistPx <
     ui_label = "Sample Distance (px)";
     ui_min = 2; ui_max = BUFFER_WIDTH;
     ui_step = 1;
-> = 400;
+> = BUFFER_WIDTH * 0.2;
 
 uniform float fLodRangePx <
     ui_type = "slider";
@@ -836,21 +836,9 @@ void PS_Accum(
     il_ao_accum = lerp(il_ao_curr, il_ao_prev, (1 - rcp(temporal)) * (!occluded));
 }
 
-void PS_Copy(
-    in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
-    out float4 temporal : SV_Target0)
-{
-    const uint2 px_coord = uv * BUFFER_SIZE;
-
-    // il_ao_prev = tex2Dfetch(samp_il_ao_ac, px_coord);
-    temporal.x = tex2Dfetch(samp_temporal, px_coord).x;
-    temporal.y = tex2Dfetch(Skyrim::samp_depth, px_coord).x;
-    temporal.zw = tex2Dfetch(Skyrim::samp_normal, px_coord).xy;
-}
-
 void PS_Filter(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
-    out float4 il_ao_blur : SV_Target)
+    out float4 il_ao_blur : SV_Target0, out float4 temporal : SV_Target1)
 {
     const uint2 px_coord = uv * BUFFER_SIZE;
 
@@ -891,6 +879,10 @@ void PS_Filter(
         }
             
     il_ao_blur = sum / weightsum;
+
+    temporal.x = tex2Dfetch(samp_temporal, px_coord).x;
+    temporal.y = tex2Dfetch(Skyrim::samp_depth, px_coord).x;
+    temporal.zw = tex2Dfetch(Skyrim::samp_normal, px_coord).xy;
 }
 #endif  // Disable filter
 
@@ -953,14 +945,9 @@ technique YASSGI_Skyrim
     }
     pass {
         VertexShader = PostProcessVS;
-        PixelShader = PS_Copy;
-        // RenderTarget0 = tex_il_ao_ac_prev;
-        RenderTarget0 = tex_temporal_geo_prev;
-    }
-    pass {
-        VertexShader = PostProcessVS;
         PixelShader = PS_Filter;
         RenderTarget0 = tex_il_ao_ac_prev;
+        RenderTarget1 = tex_temporal_geo_prev;
     }
 #endif
     pass {
