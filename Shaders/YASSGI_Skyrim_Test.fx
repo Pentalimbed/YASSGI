@@ -13,7 +13,7 @@
     RGB COLOURSPACE TRANSFORMATION MATRIX. Colour Developers.
         url:    https://www.colour-science.org/apps/
         credit: ACEScg <-> sRGB conversion matrices
-    Physically Based Rendering. Matt Pharr, Wenzel Jakob, and Greg Humphreys.
+    The Halton Sampler, Physically Based Rendering. Matt Pharr, Wenzel Jakob, and Greg Humphreys.
         url:    https://www.pbr-book.org/3ed-2018/Sampling_and_Reconstruction/The_Halton_Sampler
         credit: radicalInverse & hammersly function <src>
         license:
@@ -103,6 +103,9 @@
             LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
             OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
             SOFTWARE.
+    ReBLUR: A Hierarchical Recurrent Denoiser, Ray Tracing Gems II. Dmitry Zhdan, NVIDIA.
+        url:    https://link.springer.com/book/10.1007/978-1-4842-7185-8
+        credit: disocclusion by geometry
 */
 /*  NOTATION
 
@@ -148,6 +151,7 @@ namespace YASSGI_SKYRIM
 #define EPS 1e-6
 
 #define BUFFER_SIZE uint2(BUFFER_WIDTH, BUFFER_HEIGHT)
+#define PIXEL_UV_SIZE float2(BUFFER_RCP_WIDTH, BUFFER_RCP_HEIGHT)
 
 #define NOISE_SIZE 256
 
@@ -160,6 +164,10 @@ namespace YASSGI_SKYRIM
 
 #ifndef YASSGI_DISABLE_IL
 #   define YASSGI_DISABLE_IL 0
+#endif
+
+#ifndef YASSGI_DISABLE_FILTER
+#   define YASSGI_DISABLE_FILTER 0
 #endif
 
 static const float3x3 g_sRGBToACEScg = float3x3(
@@ -202,15 +210,19 @@ uniform float fFrameTime  < source = "TimingsReal"; >;
 
 // <---- UI ---->
 
-uniform float fDebug <
-    ui_type = "slider";
-    ui_min = 0; ui_max = 1;
-> = 1;
+// uniform float fDebug <
+//     ui_type = "slider";
+//     ui_min = 0; ui_max = 1;
+// > = 1;
 
 uniform int iViewMode <
 	ui_type = "combo";
     ui_label = "View Mode";
+#if YASSGI_DISABLE_FILTER == 0
+    ui_items = "YASSGI\0AO\0IL\0Accumulated Frames\0";
+#else
     ui_items = "YASSGI\0AO\0IL\0";
+#endif
 > = 0;
 
 const static float2 fZRange = float2(0, 20000);
@@ -333,6 +345,32 @@ uniform float fAlbedoNorm <
     ui_step = 0.01;
 > = 0.8;
 
+#if YASSGI_DISABLE_FILTER == 0
+uniform int iMaxAccumFrames <
+    ui_type = "slider";
+    ui_category = "Filter";
+    ui_label = "Max Accumulated Frames";
+    ui_min = 1; ui_max = 64;
+    ui_step = 1;
+> = 24;
+
+uniform float fDisocclThres <
+    ui_type = "slider";
+    ui_category = "Filter";
+    ui_label = "Disocclusion Threshold";
+    ui_min = 0.0; ui_max = 1.0;
+    ui_step = 0.01;
+> = 0.5;
+
+uniform float fBlurRadius <
+    ui_type = "slider";
+    ui_category = "Filter";
+    ui_label = "Blur Radius";
+    ui_min = 0.0; ui_max = 2.0;
+    ui_step = 0.01;
+> = 0.5;
+#endif
+
 uniform float fAoStrength <
     ui_type = "slider";
     ui_category = "Mixing";
@@ -359,23 +397,26 @@ uniform float fIlStrength <
 namespace Skyrim
 {
 texture tex_normal : NORMAL_TAAMASK_SSRMASK;
-sampler samp_normal { Texture = tex_normal; };
+sampler samp_normal {Texture = tex_normal;};
 
 texture tex_depth : TARGET_MAIN_DEPTH;
-sampler samp_depth { Texture = tex_depth; };
+sampler samp_depth {Texture = tex_depth;};
+
+texture tex_motion : MOTION_VECTOR;
+sampler samp_motion {Texture = tex_motion;};
 }
 
 namespace YASSGI_SKYRIM
 {
 texture tex_blue <source = "YASSGI_bleu.png";> {Width = NOISE_SIZE; Height = NOISE_SIZE; Format = RGBA8;};
-sampler samp_blue                              {Texture = tex_blue; AddressU = REPEAT; AddressV = REPEAT; AddressW = REPEAT;};
+sampler samp_blue                              {Texture = tex_blue;};
 
 // downscaled normal (RGB) raw_z (A)
 // tbf orig paper uses interleaved buffers (not blurred) but no sampler spamming for dx9.
 //                                          (or perhaps a separate shader(s) for those?)
 // Edit: I do think we need those for maximal performance.
-texture tex_blur_normal_z  {Width = BUFFER_WIDTH * YASSGI_PREBLUR_SCALE; Height = BUFFER_HEIGHT * YASSGI_PREBLUR_SCALE; Format = RGBA32F; MipLevels = MAX_MIP;};
-sampler samp_blur_normal_z {Texture = tex_blur_normal_z;};
+texture tex_blur_geo  {Width = BUFFER_WIDTH * YASSGI_PREBLUR_SCALE; Height = BUFFER_HEIGHT * YASSGI_PREBLUR_SCALE; Format = RGBA32F; MipLevels = MAX_MIP;};
+sampler samp_blur_geo {Texture = tex_blur_geo;};
 
 texture tex_blur_color  {Width = BUFFER_WIDTH * YASSGI_PREBLUR_SCALE; Height = BUFFER_HEIGHT * YASSGI_PREBLUR_SCALE; Format = RGBA16F; MipLevels = MAX_MIP;};
 sampler samp_blur_color {Texture = tex_blur_color;};
@@ -386,11 +427,21 @@ sampler samp_blur_color {Texture = tex_blur_color;};
 texture tex_il_ao  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 1;};
 sampler samp_il_ao {Texture = tex_il_ao;};
 
-// texture tex_il_ao_ac1  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 1;};
-// sampler samp_il_ao_ac1 {Texture = tex_il_ao_ac1;};
+#if YASSGI_DISABLE_FILTER == 0
+texture tex_il_ao_ac  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F;};
+sampler samp_il_ao_ac {Texture = tex_il_ao_ac;};
 
-// texture tex_il_ao_ac2  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 1;};
-// sampler samp_il_ao_ac2 {Texture = tex_il_ao_ac2;};
+texture tex_il_ao_ac_prev  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 1;};
+sampler samp_il_ao_ac_prev {Texture = tex_il_ao_ac_prev;};
+
+texture tex_temporal  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = R16F;};
+sampler samp_temporal {Texture = tex_temporal;};
+
+// history len (R), raw z (G), packed normal (BA)
+texture tex_temporal_geo_prev  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA32F;};
+sampler samp_temporal_geo_prev {Texture = tex_temporal_geo_prev;};
+#endif
+
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Functions
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -546,7 +597,7 @@ float3 giPolyFit(float3 albedo, float visibility)
 
 void PS_PreBlur(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
-    out float4 blur_normal_z : SV_Target0, out float4 blur_color : SV_Target1
+    out float4 blur_geo : SV_Target0, out float4 blur_color : SV_Target1
 )
 {
     float3 sum_normal = unpackNormal(tex2D(Skyrim::samp_normal, uv).xy);
@@ -557,7 +608,7 @@ void PS_PreBlur(
     for(uint i = 0; i < 8; ++i)
     {
         float2 offset_px; sincos(i * 0.25 * PI, offset_px.y, offset_px.x);  // <-sincos here!
-        const float2 offset_uv = offset_px / YASSGI_PREBLUR_SCALE * 0.5 * float2(BUFFER_RCP_WIDTH, BUFFER_RCP_HEIGHT);
+        const float2 offset_uv = offset_px / YASSGI_PREBLUR_SCALE * 0.5 * PIXEL_UV_SIZE;
         const float2 uv_sample = uv + offset_uv;
 
         const float w = exp(-0.66 * length(offset_px)) * isInScreen(uv_sample);
@@ -566,7 +617,7 @@ void PS_PreBlur(
         sum_color += mul(g_colorInputMat, tex2D(ReShade::BackBuffer, uv_sample).rgb) * w;
         sum_w += w;
     }
-    blur_normal_z = float4(sum_normal, sum_z) / sum_w;
+    blur_geo = float4(sum_normal, sum_z) / sum_w;
     blur_color = float4(sum_color / sum_w, 1);
 }
 
@@ -652,11 +703,11 @@ void PS_GI(
             {
                 const float2 offset_px = dir_px_slice * dist_px;
                 const float2 px_coord_sample = px_coord + side_sign * offset_px;
-                const float2 uv_sample = (px_coord_sample + 0.5) * float2(BUFFER_RCP_WIDTH, BUFFER_RCP_HEIGHT);
+                const float2 uv_sample = (px_coord_sample + 0.5) * PIXEL_UV_SIZE;
 
                 const uint mip_level = clamp(log2(dist_px) - log2_stride_px, 0, MAX_MIP);
 
-                const float4 geo_sample = tex2Dlod(samp_blur_normal_z, float4(uv_sample, mip_level, 0));
+                const float4 geo_sample = tex2Dlod(samp_blur_geo, float4(uv_sample, mip_level, 0));
                 const float3 pos_v_sample = uvzToView(uv_sample, geo_sample.w);
                 const float3 offset_v = pos_v_sample - pos_v;
 
@@ -727,30 +778,98 @@ void PS_GI(
     // il_ao = temp;
 }
 
-// void PS_Accum(
-//     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
-//     out float4 il_ao_accum : SV_Target)
-// {
-//     const uint2 px_coord = uv * BUFFER_SIZE;
+#if YASSGI_DISABLE_FILTER == 0
+void PS_Accum(
+    in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
+    out float4 il_ao_accum : SV_Target0, out float temporal : SV_Target1)
+{
+    const float2 uv_prev = uv + tex2D(Skyrim::samp_motion, uv).xy;
+    [branch]
+    if(!isInScreen(uv_prev))
+    {
+        il_ao_accum = tex2Dlod(samp_il_ao, float4(uv, 1, 0));
+        temporal = 1;
+        return;
+    }
 
-//     float4 il_ao_curr = tex2Dfetch(samp_il_ao, px_coord);
-//     float4 il_ao_hist = tex2Dfetch(samp_il_ao_ac2, px_coord);
-//     il_ao_accum = lerp(il_ao_hist, il_ao_curr, rcp(1 + fDebug));
-// }
+    const uint2 px_coord = uv * BUFFER_SIZE;
 
-// void PS_AccumCopy(
-//     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
-//     out float4 il_ao_hist : SV_Target)
-// {
-//     il_ao_hist = tex2Dfetch(samp_il_ao_ac1, uv * BUFFER_SIZE);
-// }
+    const float4 temporal_prev = tex2D(samp_temporal_geo_prev, uv_prev);
+    const float hist_len_prev = temporal_prev.x;
+
+    const float z_curr = rawZToLinear01(tex2Dfetch(Skyrim::samp_depth, px_coord).x) * fFarPlane;
+    const float z_prev = rawZToLinear01(temporal_prev.y) * fFarPlane;
+    const float3 normal_curr = unpackNormal(tex2Dfetch(Skyrim::samp_normal, px_coord).xy);
+    // const float3 normal_prev = unpackNormal(temporal_prev.zw);
+
+    const float4 il_ao_curr = tex2Dfetch(samp_il_ao, px_coord);
+    const float4 il_ao_prev = tex2D(samp_il_ao_ac_prev, uv_prev);
+    
+    // disocclusion
+    const float delta = abs(z_curr - z_prev) * abs(dot(normal_curr, normalize(uvzToView(uv, z_curr))));  // geometry: compare deviation of plane instead of point
+    const bool occluded = delta > fDisocclThres;
+    
+    temporal = min(hist_len_prev * (!occluded) + 1, iMaxAccumFrames);
+    il_ao_accum = lerp(il_ao_curr, il_ao_prev, (1 - rcp(temporal)) * (!occluded));
+}
+
+void PS_Copy(
+    in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
+    out float4 temporal : SV_Target0)
+{
+    const uint2 px_coord = uv * BUFFER_SIZE;
+
+    // il_ao_prev = tex2Dfetch(samp_il_ao_ac, px_coord);
+    temporal.x = tex2Dfetch(samp_temporal, px_coord).x;
+    temporal.y = tex2Dfetch(Skyrim::samp_depth, px_coord).x;
+    temporal.zw = tex2Dfetch(Skyrim::samp_normal, px_coord).xy;
+}
+
+void PS_Filter(
+    in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
+    out float4 il_ao_blur : SV_Target)
+{
+    const uint2 px_coord = uv * BUFFER_SIZE;
+
+    const float depth = rawZToLinear01(tex2Dfetch(Skyrim::samp_depth, px_coord).x);
+    const float3 normal = unpackNormal(tex2Dfetch(Skyrim::samp_normal, px_coord).xy);
+    const float2 zgrad = float2(ddx(depth), ddy(depth));
+
+    float4 sum = tex2Dlod(samp_il_ao_ac, float4(uv, 1, 0));
+    float weightsum = 1;
+    for(int i = -1; i <= 1; i += 2)
+        for(int j = -1; j <= 1; j += 2)
+        {
+            const int2 offset_px = int2(i, j);
+            const float2 uv_sample = uv + offset_px.xy * fBlurRadius * PIXEL_UV_SIZE;
+
+            const float depth_sample = rawZToLinear01(tex2D(Skyrim::samp_depth, uv_sample).x);
+            const float3 normal_sample = unpackNormal(tex2D(Skyrim::samp_normal, uv_sample).xy);
+            
+            float w =  isInScreen(uv_sample);
+            w *= pow(max(0, dot(normal, normal_sample)), 64);                                          // normal
+            w *= exp(-abs(depth - depth_sample) / (1 * abs(dot(zgrad, offset_px.xy * fBlurRadius)) + EPS)); // depth
+            // w *= exp(-abs(lum_curr - lum[i]) / (fVarianceWeight * variance + EPS));                 // luminance
+            w = saturate(w) * exp(-0.66 * length(offset_px));                                          // gaussian kernel
+
+            weightsum += w;
+            sum += tex2Dlod(samp_il_ao_ac, float4(uv_sample, 1, 0)) * w;
+        }
+            
+    il_ao_blur = sum / weightsum;
+}
+#endif  // Disable filter
 
 void PS_Display(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
     out float4 color : SV_Target)
 {
     color = tex2D(ReShade::BackBuffer, uv);
-    float4 il_ao = tex2Dlod(samp_il_ao, float4(uv, 1, 0));  // no need for any filter, 2 slices and it's good enough w/ vanilla TAA
+#if YASSGI_DISABLE_FILTER == 0
+    float4 il_ao = tex2Dlod(samp_il_ao_ac_prev, float4(uv, 1, 0));
+#else
+    float4 il_ao = tex2Dlod(samp_il_ao, float4(uv, 1, 0));  // ao w/ 2 slices and it's good enough w/ vanilla TAA
+#endif
     float ao_mult = fAoStrength > 0 ?
         lerp(1, 1 - il_ao.a, fAoStrength) :  // normal mixing
         exp2(il_ao.a * fAoStrength);  // exponential mixing
@@ -770,16 +889,20 @@ void PS_Display(
     {
         color.rgb = mul(g_colorOutputMat, il_ao.rgb * fIlStrength);
     }
+#if YASSGI_DISABLE_FILTER == 0
+    else if(iViewMode == 3)  // Accum
+    {
+        color.rgb = tex2D(samp_temporal, uv).x / iMaxAccumFrames;
+    }
+#endif
 }
-
-
 
 technique YASSGI_Skyrim
 {
     pass {
         VertexShader = PostProcessVS;
         PixelShader = PS_PreBlur;
-        RenderTarget0 = tex_blur_normal_z;
+        RenderTarget0 = tex_blur_geo;
         RenderTarget1 = tex_blur_color;
     }
     pass {
@@ -787,16 +910,25 @@ technique YASSGI_Skyrim
         PixelShader = PS_GI;
         RenderTarget0 = tex_il_ao;
     }
-    // pass {
-    //     VertexShader = PostProcessVS;
-    //     PixelShader = PS_Accum;
-    //     RenderTarget0 = tex_il_ao_ac1;
-    // }
-    // pass {
-    //     VertexShader = PostProcessVS;
-    //     PixelShader = PS_AccumCopy;
-    //     RenderTarget0 = tex_il_ao_ac2;
-    // }
+#if YASSGI_DISABLE_FILTER == 0
+    pass {
+        VertexShader = PostProcessVS;
+        PixelShader = PS_Accum;
+        RenderTarget0 = tex_il_ao_ac;
+        RenderTarget1 = tex_temporal;
+    }
+    pass {
+        VertexShader = PostProcessVS;
+        PixelShader = PS_Copy;
+        // RenderTarget0 = tex_il_ao_ac_prev;
+        RenderTarget0 = tex_temporal_geo_prev;
+    }
+    pass {
+        VertexShader = PostProcessVS;
+        PixelShader = PS_Filter;
+        RenderTarget0 = tex_il_ao_ac_prev;
+    }
+#endif
     pass {
         VertexShader = PostProcessVS;
         PixelShader = PS_Display;
