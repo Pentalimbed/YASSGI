@@ -178,6 +178,10 @@ namespace YASSGI_SKYRIM
 #   define YASSGI_DISABLE_FILTER 0
 #endif
 
+#ifndef YASSGI_USE_RECONSTRUCTED_NORMAL
+#   define YASSGI_USE_RECONSTRUCTED_NORMAL 0
+#endif
+
 
 static const float3x3 g_sRGBToACEScg = float3x3(
     0.613117812906440,  0.341181995855625,  0.045787344282337,
@@ -210,7 +214,7 @@ uniform float4x4 fProjMatrixJit        < source = "ProjMatrix Jittered"; >;
 uniform float4x4 fViewProjMatrixJit    < source = "ViewProjMatrix Jittered"; >;
 uniform float4x4 fInvViewProjMatrixJit < source = "InvViewProjMatrix Jittered"; >;
 
-uniform float fFov < source = "FieldOfView"; >;
+uniform float fFov     < source = "FieldOfView"; >;
 uniform float3 fCamPos < source = "Position"; >;
 
 uniform int   iFrameCount < source = "FrameCount"; >;
@@ -219,10 +223,10 @@ uniform float fFrameTime  < source = "TimingsReal"; >;
 
 // <---- UI ---->
 
-uniform float fDebug <
-    ui_type = "slider";
-    ui_min = 0; ui_max = 1;
-> = 1;
+// uniform float fDebug <
+//     ui_type = "slider";
+//     ui_min = 0; ui_max = 1;
+// > = 1;
 
 uniform int iViewMode <
 	ui_type = "combo";
@@ -238,12 +242,13 @@ uniform int iConfigGuide <
 	ui_text = "-- TLDR --\n"
               "The default setting is where the author finds the equilibrium between visual and performance, "
               "that is, where a higher setting does not significantly affect final presentation.\n\n"
-              "Here is a lower 'preset' if you find your gpu burning (ranking from least to most impact on visual):\n"
+              "Here is what to tweak if you find your card burning (ranking from least to most visual impact):\n"
               "> [Spread Exponent] to max;\n"
               "> {YASSGI_PREBLUR_SCALE} to 0.125 (1/8, idk how low you can go without ruining everything);\n"
-              "> [Spread Jitter] to 0.5 or less;\n"
-              "> Turn down [Sample Distance]. This will make the size of ao/il smaller;\n"
-              "> {YASSGI_DISABLE_FILTER} to 1 if you don't mind some grainy noise;\n"
+              "> [Spread Jitter] to 0.5 or less, too low you'll get patterns;\n"
+              "> [Slices] to 1, noisier. You can compensate by increasing Max Accumulated Frames;\n"
+              "> {YASSGI_DISABLE_FILTER} to 1 if you don't mind some grainy IL noise;\n"
+              "> Turn down [Sample Distance] if you don't mind losing large scale GI;\n"
               "> {YASSGI_DISABLE_IL} to 1 if you don't care about indirect lights.";
 	ui_category = "Configuration Guide";
 	ui_category_closed = true;
@@ -297,7 +302,7 @@ uniform float fMaxSampleDistPx <
     ui_label = "Sample Distance (px)";
     ui_min = 2; ui_max = BUFFER_WIDTH;
     ui_step = 1;
-> = BUFFER_WIDTH * 0.1;
+> = BUFFER_WIDTH * 0.2;
 
 // uniform float fLodRangePx <
 //     ui_type = "slider";
@@ -389,7 +394,7 @@ uniform float fDisocclThres <
     ui_label = "Disocclusion Threshold";
     ui_min = 0.0; ui_max = 10.0;
     ui_step = 0.1;
-> = 5;
+> = 4;
 
 // uniform float fEdgeThres <
 //     ui_type = "slider";
@@ -399,13 +404,14 @@ uniform float fDisocclThres <
 //     ui_step = 0.1;
 // > = 10;
 
-uniform float fBlurRadius <
-    ui_type = "slider";
-    ui_category = "Filter";
-    ui_label = "Blur Radius";
-    ui_min = 0.0; ui_max = 5.0;
-    ui_step = 0.01;
-> = 2.0;
+// uniform float fBlurRadius <
+//     ui_type = "slider";
+//     ui_category = "Filter";
+//     ui_label = "Blur Radius";
+//     ui_min = 0.0; ui_max = 5.0;
+//     ui_step = 0.01;
+// > = 2.0;
+static const float fBlurRadius = 2.0;
 
 #endif  // YASSGI_DISABLE_FILTER == 0
 
@@ -437,6 +443,9 @@ namespace Skyrim
 texture tex_normal : NORMAL_TAAMASK_SSRMASK;
 sampler samp_normal {Texture = tex_normal;};
 
+texture tex_normal_swap : NORMAL_TAAMASK_SSRMASK_SWAP;
+sampler samp_normal_swap {Texture = tex_normal_swap;};
+
 texture tex_depth : TARGET_MAIN_DEPTH;
 sampler samp_depth {Texture = tex_depth;};
 
@@ -448,6 +457,12 @@ namespace YASSGI_SKYRIM
 {
 texture tex_blue <source = "YASSGI_bleu.png";> {Width = NOISE_SIZE; Height = NOISE_SIZE; Format = RGBA8;};
 sampler samp_blue                              {Texture = tex_blue;};
+
+texture tex_color  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F;};
+sampler samp_color {Texture = tex_color;};
+
+texture tex_geo  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA32F;};
+sampler samp_geo {Texture = tex_geo;};
 
 // downscaled normal (RGB) raw_z (A)
 // tbf orig paper uses interleaved buffers (not blurred) but no sampler spamming for dx9.
@@ -486,15 +501,6 @@ sampler samp_temporal_geo_prev {Texture = tex_temporal_geo_prev;};
 
 // <---- Input ---->
 
-float3 unpackNormal(float2 enc)
-{
-    float2 fenc = enc * 4 - 2;
-    float f = dot(fenc, fenc);
-    float g = sqrt(1 - f * 0.25);
-    float3 n = float3(fenc * g, 1 - f * 0.5);
-    return n * float3(1, -1, -1);  // for my habit
-}
-
 float rawZToLinear01(float raw_z)
 {
     return raw_z / (fFarPlane - raw_z * (fFarPlane - fNearPlane));
@@ -523,6 +529,59 @@ bool isNear(float z){return z < fNearPlane;}
 bool isFar(float z){return z > fFarPlane;}
 bool isWeapon(float z){return z < fZRange.x;}
 bool isSky(float z){return z > fZRange.y;}
+
+float3 unpackNormal(float2 enc)
+{
+    float2 fenc = enc * 4 - 2;
+    float f = dot(fenc, fenc);
+    float g = sqrt(1 - f * 0.25);
+    float3 n = float3(fenc * g, 1 - f * 0.5);
+    return n * float3(1, -1, -1);  // for my habit
+}
+
+// src: WorldNormalFromDepthTexture.shader by Ben Golus https://gist.github.com/bgolus/a07ed65602c009d5e2f753826e8078a0
+// algo: Accurate Normal Reconstruction from Depth Buffer by atyuwen https://atyuwen.github.io/posts/normal-reconstruction
+float3 getViewNormalAccurate(float2 uv)
+{
+    float3 view_pos = uvzToView(uv, tex2Dlod(Skyrim::samp_depth, float4(uv, 0, 0)).x);
+
+    float2 off1 = float2(BUFFER_RCP_WIDTH, 0);
+    float2 off2 = float2(0, BUFFER_RCP_HEIGHT);
+
+    float3 view_pos_l = uvzToView(uv - off1, tex2Dlod(Skyrim::samp_depth, float4(uv - off1, 0, 0)).x);
+    float3 view_pos_r = uvzToView(uv + off1, tex2Dlod(Skyrim::samp_depth, float4(uv + off1, 0, 0)).x);
+    float3 view_pos_d = uvzToView(uv - off2, tex2Dlod(Skyrim::samp_depth, float4(uv - off2, 0, 0)).x);
+    float3 view_pos_u = uvzToView(uv + off2, tex2Dlod(Skyrim::samp_depth, float4(uv + off2, 0, 0)).x);
+
+    float3 l = view_pos - view_pos_l;
+    float3 r = view_pos_r - view_pos;
+    float3 d = view_pos - view_pos_d;
+    float3 u = view_pos_u - view_pos;
+
+    // get depth values at 1 & 2 px offset along both axis
+    float4 H = float4(
+        view_pos_l.z,
+        view_pos_r.z,
+        rawZToLinear01(tex2Dlod(Skyrim::samp_depth, float4(uv - 2 * off1, 0, 0)).x) * fFarPlane,
+        rawZToLinear01(tex2Dlod(Skyrim::samp_depth, float4(uv + 2 * off1, 0, 0)).x) * fFarPlane
+    );
+    float4 V = float4(
+        view_pos_d.z,
+        view_pos_u.z,
+        rawZToLinear01(tex2Dlod(Skyrim::samp_depth, float4(uv - 2 * off2, 0, 0)).x) * fFarPlane,
+        rawZToLinear01(tex2Dlod(Skyrim::samp_depth, float4(uv + 2 * off2, 0, 0)).x) * fFarPlane
+    );
+    
+    // current pixel's depth difference
+    float2 he = abs((2 * H.xy - H.zw) - view_pos.z);
+    float2 ve = abs((2 * V.xy - V.zw) - view_pos.z);
+
+    // pick horizontal and vertical diff with smallest depth difference from slopes
+    float3 h_deriv = he.x < he.y ? l : r;
+    float3 v_deriv = ve.x < ve.y ? d : u;
+
+    return normalize(cross(h_deriv, v_deriv)) * float3(1, -1, 1);
+}
 
 #if YASSGI_DISABLE_IL == 0
 float3 fakeAlbedo(float3 color)
@@ -649,14 +708,40 @@ float3 giPolyFit(float3 albedo, float visibility)
 // Pixel Shaders
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
+void PS_Setup(
+    in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
+    out float4 color : SV_Target0, out float4 geo : SV_Target1
+)
+{
+    const uint2 px_coord = uv * BUFFER_SIZE;
+
+    color = mul(g_colorInputMat, tex2Dfetch(ReShade::BackBuffer, px_coord).rgb);
+    color.a = 1;
+
+#if YASSGI_USE_RECONSTRUCTED_NORMAL == 0
+    float3 normal;
+    if(iFrameCount % 2)
+        normal = unpackNormal(tex2Dfetch(Skyrim::samp_normal, px_coord).xy);
+    else
+        normal = unpackNormal(tex2Dfetch(Skyrim::samp_normal_swap, px_coord).xy);
+#else
+    float3 normal = getViewNormalAccurate(uv);
+#endif
+
+    float raw_z = tex2Dfetch(Skyrim::samp_depth, px_coord).x;
+
+    geo = float4(normal, raw_z);
+}
+
 void PS_PreBlur(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
     out float4 blur_geo : SV_Target0, out float4 blur_radiance : SV_Target1
 )
-{
-    float3 sum_normal = unpackNormal(tex2D(Skyrim::samp_normal, uv).xy);
-    float sum_z = tex2D(Skyrim::samp_depth, uv).x;
-    float3 sum_color = mul(g_colorInputMat, tex2D(ReShade::BackBuffer, uv).rgb);
+{  
+    const float4 geo = tex2D(samp_geo, uv);
+    float3 sum_normal = geo.xyz;
+    float sum_z = geo.w;
+    float3 sum_color = tex2D(samp_color, uv).rgb;
     float sum_w = 1;
     [unroll]
     for(uint i = 0; i < 8; ++i)
@@ -665,10 +750,12 @@ void PS_PreBlur(
         const float2 offset_uv = offset_px / YASSGI_PREBLUR_SCALE * 0.5 * PIXEL_UV_SIZE;
         const float2 uv_sample = uv + offset_uv;
 
+        const float4 geo_sample = tex2D(samp_geo, uv_sample);
+
         const float w = exp(-0.66 * length(offset_px)) * isInScreen(uv_sample);
-        sum_normal += unpackNormal(tex2D(Skyrim::samp_normal, uv_sample).xy) * w;
-        sum_z += tex2D(Skyrim::samp_depth, uv_sample).x * w;
-        sum_color += mul(g_colorInputMat, tex2D(ReShade::BackBuffer, uv_sample).rgb) * w;
+        sum_normal += geo_sample.xyz * w;
+        sum_z += geo_sample.w * w;
+        sum_color += tex2D(samp_color, uv_sample).rgb * w;
         sum_w += w;
     }
     blur_geo = float4(sum_normal, sum_z) / sum_w;
@@ -687,12 +774,13 @@ void PS_GI(
 
     const uint2 px_coord = uv * BUFFER_SIZE;
 
-    const float3 color = mul(g_colorInputMat, tex2Dfetch(ReShade::BackBuffer, px_coord).rgb);
+    const float3 color = tex2Dfetch(samp_color, px_coord).rgb;
 #if YASSGI_DISABLE_IL == 0
     const float3 albedo = fakeAlbedo(color);
 #endif
-    const float3 normal_v = unpackNormal(tex2Dfetch(Skyrim::samp_normal, px_coord).xy);
-    const float raw_z = tex2Dfetch(Skyrim::samp_depth, px_coord).x;
+    const float4 geo = tex2Dfetch(samp_geo, px_coord);
+    const float3 normal_v = geo.xyz;
+    const float raw_z = geo.w;
     const float3 pos_v = uvzToView(uv, raw_z) * 0.99995;  // closer to the screen bc we're using blurred geometry
     const float3 dir_v_view = -normalize(pos_v);
 
@@ -861,7 +949,8 @@ void PS_Accum(
     const float4 temporal_prev = tex2D(samp_temporal_geo_prev, uv_prev);
     const float hist_len_prev = temporal_prev.x;
 
-    const float raw_z_curr = tex2Dfetch(Skyrim::samp_depth, px_coord).x;
+    const float4 geo_curr = tex2Dfetch(samp_geo, px_coord);
+    const float raw_z_curr = geo_curr.w;
     const float raw_z_prev = temporal_prev.y;
     const float z_curr = rawZToLinear01(raw_z_curr) * fFarPlane;
     const float z_prev = rawZToLinear01(raw_z_prev) * fFarPlane;
@@ -874,13 +963,13 @@ void PS_Accum(
         return;
     }
 
-    const float3 normal_curr = unpackNormal(tex2Dfetch(Skyrim::samp_normal, px_coord).xy);
+    const float3 normal_curr = geo_curr.xyz;
     // const float3 normal_prev = unpackNormal(temporal_prev.zw);
 
     // disocclusion
     // bool is_edge = isEdge(px_coord, z_curr);
     const float delta = abs(z_curr - z_prev) * abs(dot(normal_curr, normalize(uvzToView(uv, raw_z_curr))));
-    const bool occluded = delta > fDisocclThres * (1 + z_curr / fFarPlane * 10) * 0.1;
+    const bool occluded = delta > fDisocclThres * (1 + z_curr) * 0.01;
 
     temporal = min(hist_len_prev * !occluded + 1, iMaxAccumFrames);
 
@@ -902,14 +991,14 @@ void PS_Filter(
     temporal.y = tex2Dfetch(Skyrim::samp_depth, px_coord).x;
     temporal.zw = tex2Dfetch(Skyrim::samp_normal, px_coord).xy;
 
-    const float depth = rawZToLinear01(tex2Dfetch(Skyrim::samp_depth, px_coord).x);
+    const float depth = rawZToLinear01(temporal.y);
     const float z = depth * fFarPlane;
     [branch]
     if(isSky(z) || isWeapon(z))
         return;
 
     const float2 zgrad = float2(ddx(z), ddy(z));
-    const float3 normal = unpackNormal(tex2Dfetch(Skyrim::samp_normal, px_coord).xy);
+    const float3 normal = unpackNormal(temporal.zw);
     
     float4 sum = tex2Dlod(samp_il_ao_ac, float4(uv, 1, 0));
     // const float lum = luminance(sum.rgb);
@@ -927,9 +1016,9 @@ void PS_Filter(
             if(!isInScreen(uv_sample))
                 continue;
 
-            const float depth_sample = rawZToLinear01(tex2Dlod(Skyrim::samp_depth, float4(uv_sample, 0, 0)).x);
-            const float z_sample = depth_sample * fFarPlane;
-            const float3 normal_sample = unpackNormal(tex2Dlod(Skyrim::samp_normal, float4(uv_sample, 0, 0)).xy);
+            const float4 geo_sample = tex2Dlod(samp_geo, float4(uv_sample, 0, 0));
+            const float z_sample = rawZToLinear01(geo_sample.w) * fFarPlane;
+            const float3 normal_sample = geo_sample.xyz;
             
             [branch]
             if(isSky(z_sample) || isWeapon(z_sample))  // nan?
@@ -940,7 +1029,7 @@ void PS_Filter(
 
             float w = pow(max(EPS, dot(normal, normal_sample)), 64);                                // normal
             w *= exp(-abs(z - z_sample) / (1 * abs(dot(zgrad, offset_px.xy * fBlurRadius)) + EPS)); // depth
-            // w *= exp(-abs(lum - lum_sample) / lerp(EPS, fDebug, temporal.x <= 4));               // luminance
+            // w *= exp(-abs(lum - lum_sample) / (fDebug + EPS));               // luminance
             w = saturate(w) * exp(-0.66 * length(offset_px));                                       // gaussian kernel
 
             weightsum += w;
@@ -955,7 +1044,7 @@ void PS_Display(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
     out float4 color : SV_Target)
 {
-    color = tex2D(ReShade::BackBuffer, uv);
+    float4 geo_sample = tex2D(samp_geo, uv);
 #if YASSGI_DISABLE_FILTER == 0
     float4 il_ao = tex2Dlod(samp_il_ao_ac_prev, float4(uv, 1, 0));
 #else
@@ -968,17 +1057,17 @@ void PS_Display(
     [branch]
     if(iViewMode == 0)  // None
     {
-        color.rgb = mul(g_colorInputMat, color.rgb);
+        color.rgb = tex2D(samp_color, uv).rgb;
         color.rgb += il_ao.rgb * fIlStrength;
         color.rgb = color.rgb * ao_mult;
         color.rgb = mul(g_colorOutputMat, color.rgb);
     }
     else if(iViewMode == 1)  // Depth
     {
-        float z = rawZToLinear01(tex2Dfetch(Skyrim::samp_depth, uv * BUFFER_SIZE).x) * fFarPlane;
-        if(isWeapon(color.x))
+        float z = rawZToLinear01(geo_sample.w) * fFarPlane;
+        if(isWeapon(z))
             color = float3(z / fZRange.x, 0, 0);
-        else if (isSky(color.x))
+        else if (isSky(z))
             color = float3(0.1, 0.5, 1.0);
         else
             color = z / fZRange.y;
@@ -993,7 +1082,7 @@ void PS_Display(
         // }
         // else
         //     normal = normalize(fCamPos - uvzToWorld(uv, tex2Dfetch(Skyrim::samp_depth, uv * BUFFER_SIZE).x));
-        float3 normal = unpackNormal(tex2Dfetch(Skyrim::samp_normal, uv * BUFFER_SIZE).xy);
+        float3 normal = geo_sample.xyz;
         color = normal * 0.5 + 0.5;
     }
     else if(iViewMode == 3)  // AO
@@ -1014,6 +1103,12 @@ void PS_Display(
 
 technique YASSGI_Skyrim
 {
+    pass {
+        VertexShader = PostProcessVS;
+        PixelShader = PS_Setup;
+        RenderTarget0 = tex_color;
+        RenderTarget1 = tex_geo;
+    }
     pass {
         VertexShader = PostProcessVS;
         PixelShader = PS_PreBlur;
