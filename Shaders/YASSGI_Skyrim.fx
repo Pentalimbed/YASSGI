@@ -234,6 +234,23 @@ uniform int iViewMode <
 #endif
 > = 0;
 
+uniform int iConfigGuide <
+	ui_text = "-- TLDR --\n"
+              "The default setting is where the author finds the equilibrium between visual and performance, "
+              "that is, where a higher setting does not significantly affect final presentation.\n\n"
+              "Here is a lower 'preset' if you find your gpu burning (ranking from least to most impact on visual):\n"
+              "> [Spread Exponent] to max;\n"
+              "> {YASSGI_PREBLUR_SCALE} to 0.125 (1/8, idk how low you can go without ruining everything);\n"
+              "> [Spread Jitter] to 0.5 or less;\n"
+              "> Turn down [Sample Distance]. This will make the size of ao/il smaller;\n"
+              "> {YASSGI_DISABLE_FILTER} to 1 if you don't mind some grainy noise;\n"
+              "> {YASSGI_DISABLE_IL} to 1 if you don't care about indirect lights.";
+	ui_category = "Configuration Guide";
+	ui_category_closed = true;
+	ui_label = " ";
+	ui_type = "radio";
+>;
+
 const static float2 fZRange = float2(0, 20000);
 // uniform float2 fZRange <
 //     ui_type = "slider";
@@ -282,13 +299,14 @@ uniform float fMaxSampleDistPx <
     ui_step = 1;
 > = BUFFER_WIDTH * 0.1;
 
-uniform float fLodRangePx <
-    ui_type = "slider";
-    ui_category = "Sampling";
-    ui_label = "LOD Range (px)";
-    ui_min = 2; ui_max = 64;
-    ui_step = 1;
-> = 48;
+// uniform float fLodRangePx <
+//     ui_type = "slider";
+//     ui_category = "Sampling";
+//     ui_label = "LOD Range (px)";
+//     ui_min = 2; ui_max = 64;
+//     ui_step = 1;
+// > = 48;
+static const float fLodRangePx = 48;
 
 // uniform float fAngleJitterScale <
 //     ui_type = "slider";
