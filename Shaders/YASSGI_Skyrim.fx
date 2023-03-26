@@ -135,9 +135,8 @@
     - hi-z buffer w/ cone tracing (?)
     o remove subtle grid like pattern
     * ibl
-    - adaptive light src thres (?)
+    x adaptive light src thres (?)
     - simple geometric light src
-    - deghosting
 */
 
 #include "ReShade.fxh"
@@ -177,10 +176,6 @@ namespace YASSGI_SKYRIM
 
 #ifndef YASSGI_DISABLE_FILTER
 #   define YASSGI_DISABLE_FILTER 0
-#endif
-
-#ifndef YASSGI_EXPENSIVE_BLUR
-#   define YASSGI_EXPENSIVE_BLUR 0
 #endif
 
 
@@ -285,7 +280,7 @@ uniform float fMaxSampleDistPx <
     ui_label = "Sample Distance (px)";
     ui_min = 2; ui_max = BUFFER_WIDTH;
     ui_step = 1;
-> = BUFFER_WIDTH * 0.2;
+> = BUFFER_WIDTH * 0.1;
 
 uniform float fLodRangePx <
     ui_type = "slider";
@@ -326,14 +321,6 @@ uniform float fThinOccluderCompensation <
     ui_min = 0; ui_max = 0.7;
     ui_step = 0.01;
 > = 0.7;
-
-uniform float fZThickness <
-    ui_type = "slider";
-    ui_category = "Visual";
-    ui_label = "Z Thickness";
-    ui_min = 0; ui_max = 100.0;
-    ui_step = 0.1;
-> = 10.0;
 
 #if YASSGI_DISABLE_IL == 0
 uniform float fLightSrcThres <
@@ -398,14 +385,9 @@ uniform float fBlurRadius <
     ui_type = "slider";
     ui_category = "Filter";
     ui_label = "Blur Radius";
-    ui_min = 0.0; ui_max = 2.0;
+    ui_min = 0.0; ui_max = 5.0;
     ui_step = 0.01;
-> = 
-#if YASSGI_EXPENSIVE_BLUR == 0
-0.5;
-#else
-2.0;
-#endif  // YASSGI_EXPENSIVE_BLUR == 0
+> = 2.0;
 
 #endif  // YASSGI_DISABLE_FILTER == 0
 
@@ -696,6 +678,11 @@ void PS_GI(
     const float3 pos_v = uvzToView(uv, raw_z) * 0.99995;  // closer to the screen bc we're using blurred geometry
     const float3 dir_v_view = -normalize(pos_v);
 
+    // 
+    const float3 pos_w = uvzToWorld(uv, raw_z);
+    const float3 dir_w_view = normalize(fCamPos - pos_w);
+    const float3 normal_w = mul(fViewMatrix, float4(normal_v * float3(1, -1, 1), 1)).xyz;
+
     [branch]
     if(isWeapon(pos_v.z) || isSky(pos_v.z))  // leave sky alone
         return;
@@ -732,6 +719,8 @@ void PS_GI(
         const float3 normal_slice = normalize(cross(dir_v_slice_local, dir_v_view));
         const float3 normal_proj = projectToPlane(normal_v, normal_slice);  // not unit vector
         const float3 normal_proj_normalized = normalize(normal_proj);
+
+        const float3 dir_w_tangent = normalize(uvzToWorld(uv + dir_uv_slice * 0.01, raw_z) - pos_w);
         
         const float sign_n = sign(dot(dir_v_slice_local, normal_proj));
         const float cos_n = saturate(dot(normal_proj_normalized, dir_v_view));
@@ -788,7 +777,7 @@ void PS_GI(
                         float3 radiance_sample_new = tex2Dlod(samp_blur_radiance, float4(uv_sample, mip_level, 0)).rgb;
                         radiance_sample_new = luminance(radiance_sample_new) > fLightSrcThres ? radiance_sample_new : 0;
                         // radiance_sample_new *= ilIntegral(cos_n * side_sign, sin_n, hor_cos, hor_cos_sample);
-                        radiance_sample_new *= computeHorizonContribution(dir_v_view, dir_v_slice_local, normal_v, acosFast4(hor_cos_sample), acosFast4(hor_cos));
+                        radiance_sample_new *= computeHorizonContribution(dir_w_view, dir_w_tangent, normal_w, acosFast4(hor_cos_sample), acosFast4(hor_cos));
 
                         // depth filtering. HBIL pp.38
                         float t = smoothstep(0, 1, dot(geo_sample.xyz, offset_v));
@@ -873,7 +862,7 @@ void PS_Accum(
     // disocclusion
     // bool is_edge = isEdge(px_coord, z_curr);
     const float delta = abs(z_curr - z_prev) * abs(dot(normal_curr, normalize(uvzToView(uv, raw_z_curr))));
-    const bool occluded = delta > fDisocclThres * (1 + z_curr / fFarPlane * 3);
+    const bool occluded = delta > fDisocclThres * (1 + z_curr / fFarPlane * 10) * 0.1;
 
     temporal = min(hist_len_prev * !occluded + 1, iMaxAccumFrames);
 
@@ -907,13 +896,8 @@ void PS_Filter(
     float4 sum = tex2Dlod(samp_il_ao_ac, float4(uv, 1, 0));
     // const float lum = luminance(sum.rgb);
     float weightsum = 1;
-#if YASSGI_EXPENSIVE_BLUR == 1
-    for(int i = -2; i <= 2; i += 1)
-        for(int j = -2; j <= 2; j += 1)
-#else
     for(int i = -1; i <= 1; i += 2)
         for(int j = -1; j <= 1; j += 2)
-#endif
         {
             if(i == 0 && j == 0)
                 continue;
@@ -963,6 +947,7 @@ void PS_Display(
         lerp(1, 1 - il_ao.a, fAoStrength) :  // normal mixing
         exp2(il_ao.a * fAoStrength);  // exponential mixing
 
+    [branch]
     if(iViewMode == 0)  // None
     {
         color.rgb = mul(g_colorInputMat, color.rgb);
@@ -982,7 +967,16 @@ void PS_Display(
     }
     else if(iViewMode == 2)  // Normal
     {
-        color = unpackNormal(tex2Dfetch(Skyrim::samp_normal, uv * BUFFER_SIZE)) * 0.5 + 0.5;  // for convention
+        // float3 normal;
+        // if(uv.x < 0.5)
+        // {
+        //     normal = unpackNormal(tex2Dfetch(Skyrim::samp_normal, uv * BUFFER_SIZE).xy);
+        //     normal = mul(fViewMatrix, float4(normal * float3(1, -1, 1), 1)).xyz;
+        // }
+        // else
+        //     normal = normalize(fCamPos - uvzToWorld(uv, tex2Dfetch(Skyrim::samp_depth, uv * BUFFER_SIZE).x));
+        float3 normal = unpackNormal(tex2Dfetch(Skyrim::samp_normal, uv * BUFFER_SIZE).xy);
+        color = normal * 0.5 + 0.5;
     }
     else if(iViewMode == 3)  // AO
     {
