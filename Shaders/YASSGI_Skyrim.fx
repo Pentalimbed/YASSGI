@@ -179,6 +179,10 @@ namespace YASSGI_SKYRIM
 #   define YASSGI_DISABLE_FILTER 0
 #endif
 
+#ifndef YASSGI_EXPENSIVE_BLUR
+#   define YASSGI_EXPENSIVE_BLUR 0
+#endif
+
 
 static const float3x3 g_sRGBToACEScg = float3x3(
     0.613117812906440,  0.341181995855625,  0.045787344282337,
@@ -229,9 +233,9 @@ uniform int iViewMode <
 	ui_type = "combo";
     ui_label = "View Mode";
 #if YASSGI_DISABLE_FILTER == 0
-    ui_items = "YASSGI\0AO\0IL\0Accumulated Frames\0";
+    ui_items = "YASSGI\0Depth\0Normal\0AO\0IL\0Accumulated Frames\0";
 #else
-    ui_items = "YASSGI\0AO\0IL\0";
+    ui_items = "YASSGI\0Depth\0Normal\0AO\0IL\0";
 #endif
 > = 0;
 
@@ -372,7 +376,7 @@ uniform int iMaxAccumFrames <
     ui_label = "Max Accumulated Frames";
     ui_min = 1; ui_max = 64;
     ui_step = 1;
-> = 8;
+> = 32;
 
 uniform float fDisocclThres <
     ui_type = "slider";
@@ -396,8 +400,14 @@ uniform float fBlurRadius <
     ui_label = "Blur Radius";
     ui_min = 0.0; ui_max = 2.0;
     ui_step = 0.01;
-> = 0.5;
-#endif
+> = 
+#if YASSGI_EXPENSIVE_BLUR == 0
+0.5;
+#else
+2.0;
+#endif  // YASSGI_EXPENSIVE_BLUR == 0
+
+#endif  // YASSGI_DISABLE_FILTER == 0
 
 uniform float fAoStrength <
     ui_type = "slider";
@@ -897,9 +907,17 @@ void PS_Filter(
     float4 sum = tex2Dlod(samp_il_ao_ac, float4(uv, 1, 0));
     // const float lum = luminance(sum.rgb);
     float weightsum = 1;
+#if YASSGI_EXPENSIVE_BLUR == 1
+    for(int i = -2; i <= 2; i += 1)
+        for(int j = -2; j <= 2; j += 1)
+#else
     for(int i = -1; i <= 1; i += 2)
         for(int j = -1; j <= 1; j += 2)
+#endif
         {
+            if(i == 0 && j == 0)
+                continue;
+
             const int2 offset_px = int2(i, j);
             const float2 uv_sample = uv + offset_px.xy * fBlurRadius * PIXEL_UV_SIZE;
 
@@ -952,16 +970,30 @@ void PS_Display(
         color.rgb = color.rgb * ao_mult;
         color.rgb = mul(g_colorOutputMat, color.rgb);
     }
-    else if(iViewMode == 1)  // AO
+    else if(iViewMode == 1)  // Depth
+    {
+        float z = rawZToLinear01(tex2Dfetch(Skyrim::samp_depth, uv * BUFFER_SIZE).x) * fFarPlane;
+        if(isWeapon(color.x))
+            color = float3(z / fZRange.x, 0, 0);
+        else if (isSky(color.x))
+            color = float3(0.1, 0.5, 1.0);
+        else
+            color = z / fZRange.y;
+    }
+    else if(iViewMode == 2)  // Normal
+    {
+        color = unpackNormal(tex2Dfetch(Skyrim::samp_normal, uv * BUFFER_SIZE)) * 0.5 + 0.5;  // for convention
+    }
+    else if(iViewMode == 3)  // AO
     {
         color.rgb = ao_mult;
     }
-    else if(iViewMode == 2)  // IL
+    else if(iViewMode == 4)  // IL
     {
         color.rgb = mul(g_colorOutputMat, il_ao.rgb * fIlStrength);
     }
 #if YASSGI_DISABLE_FILTER == 0
-    else if(iViewMode == 3)  // Accum
+    else if(iViewMode == 5)  // Accum
     {
         color.rgb = tex2D(samp_temporal, uv).x / iMaxAccumFrames;
     }
