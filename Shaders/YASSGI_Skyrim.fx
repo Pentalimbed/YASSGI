@@ -131,7 +131,7 @@
     o il
     * bent normal
     o thickness heuristic
-    - alternative bitmask impl (?)
+    * alternative bitmask impl (?)
     - hi-z buffer w/ cone tracing (?)
     o remove subtle grid like pattern
     * ibl
@@ -177,12 +177,6 @@ namespace YASSGI_SKYRIM
 
 #ifndef YASSGI_DISABLE_FILTER
 #   define YASSGI_DISABLE_FILTER 0
-#endif
-
-// 0 - GTAO/HBIL
-// 1 - Bitmask IL
-#ifndef YASSGI_TECHNIQUE
-#   define YASSGI_TECHNIQUE 0
 #endif
 
 
@@ -305,7 +299,6 @@ uniform float fLodRangePx <
 //     ui_step = 0.01;
 // > = 0.65;
 
-#if YASSGI_TECHNIQUE == 0
 uniform float fFxRange <
     ui_type = "slider";
     ui_category = "Visual";
@@ -329,7 +322,7 @@ uniform float fThinOccluderCompensation <
     ui_min = 0; ui_max = 0.7;
     ui_step = 0.01;
 > = 0.7;
-#else
+
 uniform float fZThickness <
     ui_type = "slider";
     ui_category = "Visual";
@@ -337,7 +330,6 @@ uniform float fZThickness <
     ui_min = 0; ui_max = 100.0;
     ui_step = 0.1;
 > = 10.0;
-#endif
 
 #if YASSGI_DISABLE_IL == 0
 uniform float fLightSrcThres <
@@ -388,7 +380,7 @@ uniform float fDisocclThres <
     ui_label = "Disocclusion Threshold";
     ui_min = 0.0; ui_max = 10.0;
     ui_step = 0.1;
-> = 3;
+> = 5;
 
 // uniform float fEdgeThres <
 //     ui_type = "slider";
@@ -711,13 +703,9 @@ void PS_GI(
     const float angle_pizza = PI * rcp_dir_count;
     const float stride_px = max(1, fBaseStridePx * (0.5 + blue.x * fStrideJitter));
     const float log2_stride_px = log2(stride_px);
-#if YASSGI_TECHNIQUE == 0
     const float falloff_start_px = fFxRange * (1 - fFxFalloff);
     const float falloff_mul = -rcp(fFxRange);
     const float falloff_add = falloff_start_px / fFxFalloff + 1;
-#else
-    uint bitmask = 0;
-#endif
 
     // per slice
     float4 sum = 0;  // visibility
@@ -767,12 +755,12 @@ void PS_GI(
 
                 const float4 geo_sample = tex2Dlod(samp_blur_geo, float4(uv_sample, mip_level, 0));
                 const float3 pos_v_sample = uvzToView(uv_sample, geo_sample.w);
-                const float3 offset_v = pos_v_sample - pos_v;
-
-#if YASSGI_TECHNIQUE == 0
+                
                 [branch]
                 if(!isWeapon(pos_v_sample.z))
                 {
+                    const float3 offset_v = pos_v_sample - pos_v;
+
                     // thin obj heuristics
                     const float falloff = length(offset_v * float3(1, 1, 1 + fThinOccluderCompensation));
                     const float weight = saturate(falloff * falloff_mul + falloff_add);
@@ -804,7 +792,6 @@ void PS_GI(
                     }
 #endif
                 }
-#endif
 
                 dist_px += stride_px * exp2(step * fSpreadExp);
                 ++step;  // 2 same stride at the start. more precise perhaps (?)

@@ -147,7 +147,6 @@ uniform float fAlbedoNorm <
 
 // <---- Sampling ---->
 
-#if YASSGI_TECHNIQUE == 0
 uniform uint iNumSample <
     ui_type = "slider";
     ui_category = "Sampling";
@@ -155,7 +154,6 @@ uniform uint iNumSample <
     ui_min = 1; ui_max = 32;
     ui_step = 1;
 > = 6;
-#endif
 
 uniform uint iNumSteps <
     ui_type = "slider";
