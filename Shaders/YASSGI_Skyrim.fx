@@ -179,6 +179,12 @@ namespace YASSGI_SKYRIM
 #   define YASSGI_DISABLE_FILTER 0
 #endif
 
+// 0 - GTAO/HBIL
+// 1 - Bitmask IL
+#ifndef YASSGI_TECHNIQUE
+#   define YASSGI_TECHNIQUE 0
+#endif
+
 
 static const float3x3 g_sRGBToACEScg = float3x3(
     0.613117812906440,  0.341181995855625,  0.045787344282337,
@@ -299,6 +305,7 @@ uniform float fLodRangePx <
 //     ui_step = 0.01;
 // > = 0.65;
 
+#if YASSGI_TECHNIQUE == 0
 uniform float fFxRange <
     ui_type = "slider";
     ui_category = "Visual";
@@ -322,6 +329,15 @@ uniform float fThinOccluderCompensation <
     ui_min = 0; ui_max = 0.7;
     ui_step = 0.01;
 > = 0.7;
+#else
+uniform float fZThickness <
+    ui_type = "slider";
+    ui_category = "Visual";
+    ui_label = "Z Thickness";
+    ui_min = 0; ui_max = 100.0;
+    ui_step = 0.1;
+> = 10.0;
+#endif
 
 #if YASSGI_DISABLE_IL == 0
 uniform float fLightSrcThres <
@@ -370,17 +386,17 @@ uniform float fDisocclThres <
     ui_type = "slider";
     ui_category = "Filter";
     ui_label = "Disocclusion Threshold";
-    ui_min = 0.0; ui_max = 1.0;
-    ui_step = 0.01;
-> = 0.5;
+    ui_min = 0.0; ui_max = 10.0;
+    ui_step = 0.1;
+> = 3;
 
-uniform float fEdgeThres <
-    ui_type = "slider";
-    ui_category = "Filter";
-    ui_label = "Edge Detection Threshold";
-    ui_min = 0.0; ui_max = 50.0;
-    ui_step = 1.0;
-> = 10;
+// uniform float fEdgeThres <
+//     ui_type = "slider";
+//     ui_category = "Filter";
+//     ui_label = "Edge Detection Threshold";
+//     ui_min = 0.0; ui_max = 50.0;
+//     ui_step = 0.1;
+// > = 10;
 
 uniform float fBlurRadius <
     ui_type = "slider";
@@ -614,17 +630,17 @@ float3 giPolyFit(float3 albedo, float visibility)
 }
 
 #if YASSGI_DISABLE_FILTER == 0
-bool isEdge(uint2 px_coord, float z)
-{
-    int2 four_neighbors[4] = {int2(-1,0), int2(1,0), int2(0,-1), int2(0,1)};
-    for(uint i = 0; i < 4; ++i)
-    {
-        float z_sample = rawZToLinear01(tex2Dfetch(Skyrim::samp_depth, px_coord + four_neighbors[i]).w) * fFarPlane;
-        if(abs(z_sample - z) > fEdgeThres)
-            return true;
-    }
-    return false;
-}
+// bool isEdge(uint2 px_coord, float z)
+// {
+//     int2 four_neighbors[4] = {int2(-1,0), int2(1,0), int2(0,-1), int2(0,1)};
+//     for(uint i = 0; i < 4; ++i)
+//     {
+//         float z_sample = rawZToLinear01(tex2Dfetch(Skyrim::samp_depth, px_coord + four_neighbors[i]).w) * fFarPlane;
+//         if(abs(z_sample - z) > fEdgeThres * 1000)
+//             return true;
+//     }
+//     return false;
+// }
 #endif
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -692,12 +708,16 @@ void PS_GI(
 
     // some consts
     const float rcp_dir_count = 1.0 / iDirCount;
-    const float angle_sector = PI * rcp_dir_count;  // may confuse with bitmask il sectors; angle_increment? angle_pizza_slice?
+    const float angle_pizza = PI * rcp_dir_count;
     const float stride_px = max(1, fBaseStridePx * (0.5 + blue.x * fStrideJitter));
     const float log2_stride_px = log2(stride_px);
+#if YASSGI_TECHNIQUE == 0
     const float falloff_start_px = fFxRange * (1 - fFxFalloff);
     const float falloff_mul = -rcp(fFxRange);
     const float falloff_add = falloff_start_px / fFxFalloff + 1;
+#else
+    uint bitmask = 0;
+#endif
 
     // per slice
     float4 sum = 0;  // visibility
@@ -705,7 +725,7 @@ void PS_GI(
     for(uint idx_dir = 0; idx_dir < iDirCount; ++idx_dir)
     {
         // slice directions
-        const float angle_slice = (idx_dir + blue.y) * angle_sector;
+        const float angle_slice = (idx_dir + blue.y) * angle_pizza;
         float2 dir_px_slice; sincos(angle_slice, dir_px_slice.y, dir_px_slice.x);  // <-sincos here!
         const float2 dir_uv_slice = normalize(dir_px_slice * float2(BUFFER_WIDTH * BUFFER_RCP_HEIGHT, 1));
 
@@ -722,7 +742,7 @@ void PS_GI(
         
         // Algorithm 1 in the GTAO paper
         // 0 for -dir_px_slice, 1 for +dir_px_slice
-        const float2 dists = intersectBox(px_coord, dir_px_slice, float4(0, 0, BUFFER_SIZE)).y;
+        const float2 dists = intersectBox(px_coord, dir_px_slice, float4(0, 0, BUFFER_SIZE));
         float h0, h1;
         [unroll]
         for(uint side = 0; side <= 1; ++side)
@@ -749,6 +769,7 @@ void PS_GI(
                 const float3 pos_v_sample = uvzToView(uv_sample, geo_sample.w);
                 const float3 offset_v = pos_v_sample - pos_v;
 
+#if YASSGI_TECHNIQUE == 0
                 [branch]
                 if(!isWeapon(pos_v_sample.z))
                 {
@@ -783,6 +804,7 @@ void PS_GI(
                     }
 #endif
                 }
+#endif
 
                 dist_px += stride_px * exp2(step * fSpreadExp);
                 ++step;  // 2 same stride at the start. more precise perhaps (?)
@@ -852,16 +874,16 @@ void PS_Accum(
     // const float3 normal_prev = unpackNormal(temporal_prev.zw);
 
     // disocclusion
-    bool is_edge = isEdge(px_coord, z_curr);
-    const float delta = abs(z_curr - z_prev) / z_curr * abs(dot(normal_curr, normalize(uvzToView(uv, raw_z_curr))));
-    const bool occluded = delta > fDisocclThres * 0.1;
+    // bool is_edge = isEdge(px_coord, z_curr);
+    const float delta = abs(z_curr - z_prev) * abs(dot(normal_curr, normalize(uvzToView(uv, raw_z_curr))));
+    const bool occluded = delta > fDisocclThres * (1 + z_curr / fFarPlane * 3);
 
-    temporal = min(hist_len_prev * (is_edge || !occluded) + 1, iMaxAccumFrames);
+    temporal = min(hist_len_prev * !occluded + 1, iMaxAccumFrames);
 
     const float4 il_ao_curr = tex2Dlod(samp_il_ao, float4(uv, temporal <= 4 ? MAX_MIP : 0, 0));
     const float4 il_ao_prev = tex2D(samp_il_ao_ac_prev, uv_prev);
     
-    il_ao_accum = lerp(il_ao_curr, il_ao_prev, (1 - rcp(temporal)) * (is_edge || !occluded));
+    il_ao_accum = lerp(il_ao_curr, il_ao_prev, (1 - rcp(temporal)) * !occluded);
 }
 
 void PS_Filter(
