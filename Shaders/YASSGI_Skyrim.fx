@@ -13,6 +13,9 @@
     RGB COLOURSPACE TRANSFORMATION MATRIX. Colour Developers.
         url:    https://www.colour-science.org/apps/
         credit: ACEScg <-> sRGB conversion matrices
+    Accurate Normal Reconstruction from Depth Buffer. atyuwen.
+        url:    https://atyuwen.github.io/posts/normal-reconstruction
+        credit: view normal reconstruction algorithm
     The Halton Sampler, Physically Based Rendering. Matt Pharr, Wenzel Jakob, and Greg Humphreys.
         url:    https://www.pbr-book.org/3ed-2018/Sampling_and_Reconstruction/The_Halton_Sampler
         credit: radicalInverse & hammersly function <src>
@@ -126,7 +129,7 @@
 */
 /*  TODO
 
-    - pending  o finished  x canceled  * shelved
+    - pending  o finished  x canceled  * shelved  ? idk
 
     o il
     * bent normal
@@ -137,6 +140,10 @@
     * ibl
     x adaptive light src thres (?)
     - simple geometric light src
+    ? deghosting (obviously they're from the "halo" around objs, looks nasty when stuff inside are properly disoccluded.
+                  this shouldn't happen if we have proper thickness.
+                  if I save more history like ReBLUR, I may be able to use that as determinant of "rapid changes".
+                  hell no, just turn down max accum frames.)
 */
 
 #include "ReShade.fxh"
@@ -206,13 +213,11 @@ static const float3x3 g_ACEScgToSRGB = float3x3(
 uniform float fFarPlane  < source = "Far"; >;
 uniform float fNearPlane < source = "Near"; >;
 
-uniform float4x4 fViewMatrix        < source = "ViewMatrix"; >;
-uniform float4x4 fProjMatrix        < source = "ProjMatrix"; >;
-uniform float4x4 fViewProjMatrix    < source = "ViewProjMatrix"; >;
-uniform float4x4 fInvViewProjMatrix < source = "InvViewProjMatrix"; >;
-uniform float4x4 fProjMatrixJit        < source = "ProjMatrix Jittered"; >;
-uniform float4x4 fViewProjMatrixJit    < source = "ViewProjMatrix Jittered"; >;
-uniform float4x4 fInvViewProjMatrixJit < source = "InvViewProjMatrix Jittered"; >;
+uniform float4x4 fViewMatrix         < source = "ViewMatrix"; >;
+uniform float4x4 fProjMatrix         < source = "ProjMatrix"; >;
+uniform float4x4 fViewProjMatrix     < source = "ViewProjMatrix"; >;
+uniform float4x4 fInvViewProjMatrix  < source = "InvViewProjMatrix"; >;
+uniform float4x4 fPrevViewProjMatrix < source = "PrevViewProjMatrix"; >;
 
 uniform float fFov     < source = "FieldOfView"; >;
 uniform float3 fCamPos < source = "Position"; >;
@@ -386,15 +391,15 @@ uniform int iMaxAccumFrames <
     ui_label = "Max Accumulated Frames";
     ui_min = 1; ui_max = 64;
     ui_step = 1;
-> = 32;
+> = 12;
 
 uniform float fDisocclThres <
     ui_type = "slider";
     ui_category = "Filter";
     ui_label = "Disocclusion Threshold";
-    ui_min = 0.0; ui_max = 10.0;
-    ui_step = 0.1;
-> = 4;
+    ui_min = 0.0; ui_max = 1.0;
+    ui_step = 0.01;
+> = 0.4;
 
 // uniform float fEdgeThres <
 //     ui_type = "slider";
@@ -422,7 +427,7 @@ uniform float fAoStrength <
     ui_tooltip = "Negative value for non-physical-accurate exponential mixing.";
     ui_min = -2.0; ui_max = 1.0;
     ui_step = 0.01;
-> = -1.5;
+> = -1.0;
 
 uniform float fIlStrength <
     ui_type = "slider";
@@ -509,17 +514,17 @@ float rawZToLinear01(float raw_z)
 float3 uvzToWorld(float2 uv, float raw_z)
 {
     float4 pos_s = float4((uv * 2 - 1) * float2(1, -1) * raw_z, raw_z, 1);
-    float4 pos = mul(transpose(fInvViewProjMatrixJit), pos_s);
+    float4 pos = mul(transpose(fInvViewProjMatrix), pos_s);
     return pos.xyz / pos.w;
 }
 float3 uvzToView(float2 uv, float raw_z)
 {
-    float4x4 inv_proj = mul(fInvViewProjMatrixJit, fViewMatrix);
+    float4x4 inv_proj = mul(fInvViewProjMatrix, fViewMatrix);
     float4 pos_view = mul(transpose(inv_proj), float4((uv * 2 - 1) * float2(1, -1) * raw_z, raw_z, 1));
     return pos_view.xyz / pos_view.w;
 }
 float3 viewToUvz(float3 pos){
-    float4 pos_clip = mul(transpose(fProjMatrixJit), float4(pos, 1));
+    float4 pos_clip = mul(transpose(fProjMatrix), float4(pos, 1));
     pos_clip.xyz /= pos_clip.w;
     pos_clip.xy = (pos_clip.xy / pos_clip.z * float2(1, -1) + 1) * 0.5;
     return pos_clip.xyz;
@@ -539,8 +544,6 @@ float3 unpackNormal(float2 enc)
     return n * float3(1, -1, -1);  // for my habit
 }
 
-// src: WorldNormalFromDepthTexture.shader by Ben Golus https://gist.github.com/bgolus/a07ed65602c009d5e2f753826e8078a0
-// algo: Accurate Normal Reconstruction from Depth Buffer by atyuwen https://atyuwen.github.io/posts/normal-reconstruction
 float3 getViewNormalAccurate(float2 uv)
 {
     float3 view_pos = uvzToView(uv, tex2Dlod(Skyrim::samp_depth, float4(uv, 0, 0)).x);
@@ -935,21 +938,26 @@ void PS_Accum(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
     out float4 il_ao_accum : SV_Target0, out float temporal : SV_Target1)
 {
+    const uint2 px_coord = uv * BUFFER_SIZE;
+
+    const float4 geo_curr = tex2Dfetch(samp_geo, px_coord);
+
     const float2 uv_prev = uv + tex2D(Skyrim::samp_motion, uv).xy;
+    // const float3 pos_w = uvzToWorld(uv, geo_curr.w);
+    // float4 uv_prev = mul(transpose(fPrevViewProjMatrix), float4(pos_w, 1));
+    // uv_prev.xyz /= uv_prev.w;
+    // uv_prev.xy = (uv_prev.xy / uv_prev.z * float2(1, -1) + 1) * 0.5;
     [branch]
-    if(!isInScreen(uv_prev))
+    if(!isInScreen(uv_prev.xy))
     {
         il_ao_accum = tex2Dlod(samp_il_ao, float4(uv, 1, 0));
         temporal = 1;
         return;
     }
 
-    const uint2 px_coord = uv * BUFFER_SIZE;
-
-    const float4 temporal_prev = tex2D(samp_temporal_geo_prev, uv_prev);
+    const float4 temporal_prev = tex2D(samp_temporal_geo_prev, uv_prev.xy);
     const float hist_len_prev = temporal_prev.x;
 
-    const float4 geo_curr = tex2Dfetch(samp_geo, px_coord);
     const float raw_z_curr = geo_curr.w;
     const float raw_z_prev = temporal_prev.y;
     const float z_curr = rawZToLinear01(raw_z_curr) * fFarPlane;
@@ -969,12 +977,12 @@ void PS_Accum(
     // disocclusion
     // bool is_edge = isEdge(px_coord, z_curr);
     const float delta = abs(z_curr - z_prev) * abs(dot(normal_curr, normalize(uvzToView(uv, raw_z_curr))));
-    const bool occluded = delta > fDisocclThres * (1 + z_curr) * 0.01;
+    const bool occluded = delta > fDisocclThres * (1 + z_curr) * 0.1;
 
     temporal = min(hist_len_prev * !occluded + 1, iMaxAccumFrames);
 
     const float4 il_ao_curr = tex2Dlod(samp_il_ao, float4(uv, temporal <= 4 ? MAX_MIP : 0, 0));
-    const float4 il_ao_prev = tex2D(samp_il_ao_ac_prev, uv_prev);
+    const float4 il_ao_prev = tex2D(samp_il_ao_ac_prev, uv_prev.xy);
     
     il_ao_accum = lerp(il_ao_curr, il_ao_prev, (1 - rcp(temporal)) * !occluded);
 }
@@ -1044,7 +1052,7 @@ void PS_Display(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
     out float4 color : SV_Target)
 {
-    float4 geo_sample = tex2D(samp_geo, uv);
+    float4 geo = tex2D(samp_geo, uv);
 #if YASSGI_DISABLE_FILTER == 0
     float4 il_ao = tex2Dlod(samp_il_ao_ac_prev, float4(uv, 1, 0));
 #else
@@ -1064,7 +1072,7 @@ void PS_Display(
     }
     else if(iViewMode == 1)  // Depth
     {
-        float z = rawZToLinear01(geo_sample.w) * fFarPlane;
+        float z = rawZToLinear01(geo.w) * fFarPlane;
         if(isWeapon(z))
             color = float3(z / fZRange.x, 0, 0);
         else if (isSky(z))
@@ -1082,7 +1090,7 @@ void PS_Display(
         // }
         // else
         //     normal = normalize(fCamPos - uvzToWorld(uv, tex2Dfetch(Skyrim::samp_depth, uv * BUFFER_SIZE).x));
-        float3 normal = geo_sample.xyz;
+        float3 normal = geo.xyz;
         color = normal * 0.5 + 0.5;
     }
     else if(iViewMode == 3)  // AO
