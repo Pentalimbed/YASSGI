@@ -137,6 +137,7 @@
     * ibl
     - adaptive light src thres (?)
     - simple geometric light src
+    - deghosting
 */
 
 #include "ReShade.fxh"
@@ -219,10 +220,10 @@ uniform float fFrameTime  < source = "TimingsReal"; >;
 
 // <---- UI ---->
 
-// uniform float fDebug <
-//     ui_type = "slider";
-//     ui_min = 0; ui_max = 1;
-// > = 1;
+uniform float fDebug <
+    ui_type = "slider";
+    ui_min = 0; ui_max = 1;
+> = 1;
 
 uniform int iViewMode <
 	ui_type = "combo";
@@ -363,7 +364,7 @@ uniform int iMaxAccumFrames <
     ui_label = "Max Accumulated Frames";
     ui_min = 1; ui_max = 64;
     ui_step = 1;
-> = 12;
+> = 8;
 
 uniform float fDisocclThres <
     ui_type = "slider";
@@ -443,7 +444,7 @@ sampler samp_blur_radiance {Texture = tex_blur_radiance;};
 // texture tex_bent_normal  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F;};
 // sampler samp_bent_normal {Texture = tex_bent_normal;};
 
-texture tex_il_ao  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = 1;};
+texture tex_il_ao  {Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA16F; MipLevels = MAX_MIP;};
 sampler samp_il_ao {Texture = tex_il_ao;};
 
 #if YASSGI_DISABLE_FILTER == 0
@@ -612,17 +613,19 @@ float3 giPolyFit(float3 albedo, float visibility)
     return a * vis3 - b * vis2 + c * visibility;
 }
 
+#if YASSGI_DISABLE_FILTER == 0
 bool isEdge(uint2 px_coord, float z)
 {
     int2 four_neighbors[4] = {int2(-1,0), int2(1,0), int2(0,-1), int2(0,1)};
     for(uint i = 0; i < 4; ++i)
     {
-        float z_sample = rawZToLinear01(tex2Dfetch(Skyrim::samp_depth, px_coord + four_neighbors[i])) * fFarPlane;
+        float z_sample = rawZToLinear01(tex2Dfetch(Skyrim::samp_depth, px_coord + four_neighbors[i]).w) * fFarPlane;
         if(abs(z_sample - z) > fEdgeThres)
             return true;
     }
     return false;
 }
+#endif
 
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 // Pixel Shaders
@@ -848,16 +851,17 @@ void PS_Accum(
     const float3 normal_curr = unpackNormal(tex2Dfetch(Skyrim::samp_normal, px_coord).xy);
     // const float3 normal_prev = unpackNormal(temporal_prev.zw);
 
-    const float4 il_ao_curr = tex2Dfetch(samp_il_ao, px_coord);
-    const float4 il_ao_prev = tex2D(samp_il_ao_ac_prev, uv_prev);
-    
     // disocclusion
     bool is_edge = isEdge(px_coord, z_curr);
     const float delta = abs(z_curr - z_prev) / z_curr * abs(dot(normal_curr, normalize(uvzToView(uv, raw_z_curr))));
     const bool occluded = delta > fDisocclThres * 0.1;
-    
+
     temporal = min(hist_len_prev * (is_edge || !occluded) + 1, iMaxAccumFrames);
-    il_ao_accum = lerp(il_ao_curr, il_ao_prev, (1 - rcp(temporal)) * (!occluded));
+
+    const float4 il_ao_curr = tex2Dlod(samp_il_ao, float4(uv, temporal <= 4 ? MAX_MIP : 0, 0));
+    const float4 il_ao_prev = tex2D(samp_il_ao_ac_prev, uv_prev);
+    
+    il_ao_accum = lerp(il_ao_curr, il_ao_prev, (1 - rcp(temporal)) * (is_edge || !occluded));
 }
 
 void PS_Filter(
@@ -882,6 +886,7 @@ void PS_Filter(
     const float3 normal = unpackNormal(tex2Dfetch(Skyrim::samp_normal, px_coord).xy);
     
     float4 sum = tex2Dlod(samp_il_ao_ac, float4(uv, 1, 0));
+    // const float lum = luminance(sum.rgb);
     float weightsum = 1;
     for(int i = -1; i <= 1; i += 2)
         for(int j = -1; j <= 1; j += 2)
@@ -901,13 +906,16 @@ void PS_Filter(
             if(isSky(z_sample) || isWeapon(z_sample))  // nan?
                 continue;
 
+            float4 il_ao_sample = tex2Dlod(samp_il_ao_ac, float4(uv_sample, 1, 0));
+            // float lum_sample = luminance(il_ao_sample.rgb);
+
             float w = pow(max(EPS, dot(normal, normal_sample)), 64);                                // normal
             w *= exp(-abs(z - z_sample) / (1 * abs(dot(zgrad, offset_px.xy * fBlurRadius)) + EPS)); // depth
-            // w *= exp(-abs(lum_curr - lum[i]) / (fVarianceWeight * variance + EPS));              // luminance
+            // w *= exp(-abs(lum - lum_sample) / lerp(EPS, fDebug, temporal.x <= 4));               // luminance
             w = saturate(w) * exp(-0.66 * length(offset_px));                                       // gaussian kernel
 
             weightsum += w;
-            sum += tex2Dlod(samp_il_ao_ac, float4(uv_sample, 1, 0)) * w;
+            sum += il_ao_sample * w;
         }
             
     il_ao_blur = sum / weightsum;
