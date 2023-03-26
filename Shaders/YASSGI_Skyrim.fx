@@ -236,11 +236,7 @@ uniform float fFrameTime  < source = "TimingsReal"; >;
 uniform int iViewMode <
 	ui_type = "combo";
     ui_label = "View Mode";
-#if YASSGI_DISABLE_FILTER == 0
     ui_items = "YASSGI\0Depth\0Normal\0AO\0IL\0Accumulated Frames\0";
-#else
-    ui_items = "YASSGI\0Depth\0Normal\0AO\0IL\0";
-#endif
 > = 0;
 
 uniform int iConfigGuide <
@@ -429,6 +425,7 @@ uniform float fAoStrength <
     ui_step = 0.01;
 > = -1.0;
 
+#if YASSGI_DISABLE_IL == 0
 uniform float fIlStrength <
     ui_type = "slider";
     ui_category = "Mixing";
@@ -436,6 +433,7 @@ uniform float fIlStrength <
     ui_min = 0.0; ui_max = 3.0;
     ui_step = 0.01;
 > = 1.5;
+#endif
 
 }
 
@@ -723,6 +721,7 @@ void PS_Setup(
 
 #if YASSGI_USE_RECONSTRUCTED_NORMAL == 0
     float3 normal;
+    [branch]
     if(iFrameCount % 2)
         normal = unpackNormal(tex2Dfetch(Skyrim::samp_normal, px_coord).xy);
     else
@@ -1052,6 +1051,8 @@ void PS_Display(
     in float4 vpos : SV_Position, in float2 uv : TEXCOORD,
     out float4 color : SV_Target)
 {
+    color = tex2D(ReShade::BackBuffer, uv);
+
     float4 geo = tex2D(samp_geo, uv);
 #if YASSGI_DISABLE_FILTER == 0
     float4 il_ao = tex2Dlod(samp_il_ao_ac_prev, float4(uv, 1, 0));
@@ -1066,7 +1067,9 @@ void PS_Display(
     if(iViewMode == 0)  // None
     {
         color.rgb = tex2D(samp_color, uv).rgb;
+#if YASSGI_DISABLE_IL == 0
         color.rgb += il_ao.rgb * fIlStrength;
+#endif
         color.rgb = color.rgb * ao_mult;
         color.rgb = mul(g_colorOutputMat, color.rgb);
     }
@@ -1097,10 +1100,12 @@ void PS_Display(
     {
         color.rgb = ao_mult;
     }
+#if YASSGI_DISABLE_IL == 0
     else if(iViewMode == 4)  // IL
     {
         color.rgb = mul(g_colorOutputMat, il_ao.rgb * fIlStrength);
     }
+#endif
 #if YASSGI_DISABLE_FILTER == 0
     else if(iViewMode == 5)  // Accum
     {
