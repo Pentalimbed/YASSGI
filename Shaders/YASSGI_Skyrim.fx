@@ -261,6 +261,7 @@ uniform int iConfigGuide <
               "> [Slices] to 1, noisier. You can compensate by increasing Max Accumulated Frames;\n"
               "> {YASSGI_DISABLE_FILTER} to 1 if you don't mind some grainy noise;\n"
               "> Turn down [Sample Distance] if you don't mind losing large scale GI;\n"
+              "> {YASSGI_USE_BITMASK} to 1 is a bit faster with IL turned on.\n"
               "> {YASSGI_DISABLE_IL} to 1 if you don't care about indirect lights.";
 	ui_category = "Configuration Guide";
 	ui_category_closed = true;
@@ -362,17 +363,17 @@ uniform float fThickness <
     ui_type = "slider";
     ui_category = "Visual";
     ui_label = "Thickness";
-    ui_min = 0.0; ui_max = 100.0;
+    ui_min = 0.0; ui_max = 30.0;
     ui_step = 0.1;
-> = 1;
+> = 3;
 
 uniform float fThicknessZScale <
     ui_type = "slider";
     ui_category = "Visual";
     ui_label = "Thickness Z Scaling";
-    ui_min = 0.0; ui_max = 5000.0;
-    ui_step = 1;
-> = 2500;
+    ui_min = 0.0; ui_max = 1.0;
+    ui_step = 0.01;
+> = 0.1;
 #endif  // YASSGI_USE_BITMASK == 0
 
 #if YASSGI_DISABLE_IL == 0
@@ -450,14 +451,9 @@ uniform float fAoStrength <
     ui_category = "Mixing";
     ui_label = "AO";
     ui_tooltip = "Negative value for non-physical-accurate exponential mixing.";
-    ui_min = -4.0; ui_max = 2.0;
+    ui_min = -2.0; ui_max = 1.0;
     ui_step = 0.01;
-> = 
-#if YASSGI_USE_BITMASK == 0
--1.0;
-#else
-2.0;
-#endif
+> = -1.0;
 
 #if YASSGI_DISABLE_IL == 0
 uniform float fIlStrength <
@@ -466,7 +462,7 @@ uniform float fIlStrength <
     ui_label = "IL";
     ui_min = 0.0; ui_max = 3.0;
     ui_step = 0.01;
-> = 1.5;
+> = 2;
 #endif
 
 }
@@ -755,7 +751,7 @@ void PS_Setup(
 
 #if YASSGI_USE_RECONSTRUCTED_NORMAL == 0
     float3 normal;
-    if(iFrameCount % 2 == 0)
+    if((uint)iFrameCount & 1 == 1)
         normal = unpackNormal(tex2Dfetch(Skyrim::samp_normal, px_coord).xy);
     else
         normal = unpackNormal(tex2Dfetch(Skyrim::samp_normal_swap, px_coord).xy);
@@ -863,34 +859,36 @@ void PS_GI(
         const float3 normal_proj_normalized = normalize(normal_proj);
 
         const float3 dir_w_tangent = normalize(uvzToWorld(uv + dir_uv_slice * 0.01, raw_z) - pos_w);
-        
+
+#if YASSGI_USE_BITMASK == 0      
         const float sign_n = sign(dot(dir_v_slice_local, normal_proj));
         const float cos_n = saturate(dot(normal_proj_normalized, dir_v_view));
         const float n = sign_n * acosFast4(cos_n);
         const float sin_n = sin(n);
         
-        // Algorithm 1 in the GTAO paper
-        // 0 for -dir_px_slice, 1 for +dir_px_slice
-        const float2 dists = intersectBox(px_coord, dir_px_slice, float4(0, 0, BUFFER_SIZE));
-#if YASSGI_USE_BITMASK == 0
         float h0, h1;
 #else
         uint bitmask = 0;
-#endif  // YASSGI_USE_BITMASK == 0
+#endif
+
+        // Algorithm 1 in the GTAO paper
+        // 0 for -dir_px_slice, 1 for +dir_px_slice
+        const float2 dists = intersectBox(px_coord, dir_px_slice, float4(0, 0, BUFFER_SIZE));
         [unroll]
         for(uint side = 0; side <= 1; ++side)
         {
             const int side_sign = side * 2 - 1;
             const float max_dist = min(fMaxSampleDistPx, side ? dists.y : abs(dists.x));
+            
+#if YASSGI_USE_BITMASK == 0
             const float min_hor_cos = cos(n + side_sign * HALF_PI);
+            float hor_cos = min_hor_cos;
+            float3 radiance_sample = 0;
+#endif
 
             // marching
             uint step = 0;
             float dist_px = stride_px;
-            float hor_cos = min_hor_cos;
-#if YASSGI_USE_BITMASK == 0
-            float3 radiance_sample = 0;
-#endif  // YASSGI_USE_BITMASK == 0
             [loop]
             while(dist_px < max_dist && step < 64)  // preventing infinite loop when you tweak params in ReShade
             {
@@ -899,7 +897,6 @@ void PS_GI(
                 const float2 uv_sample = (px_coord_sample + 0.5) * PIXEL_UV_SIZE;
 
                 const uint mip_level = clamp(log2(dist_px) - log2_stride_px, 0, MAX_MIP);
-
                 const float4 geo_sample = tex2Dlod(samp_blur_geo, float4(uv_sample, mip_level, 0));
                 const float3 pos_v_sample = uvzToView(uv_sample, geo_sample.w);
                 
@@ -939,10 +936,13 @@ void PS_GI(
                         hor_cos = hor_cos_sample;
                     }
 #endif  // YASSGI_DISABLE_IL == 1
+
                 }
-#else
+
+#else  // bitmask enabled
+
                 const float3 pos_w_front = uvzToWorld(uv_sample, geo_sample.w);
-                const float3 pos_w_back = pos_w_front + normalize(pos_w_front - fCamPos) * fThickness * lerp(1, fThicknessZScale, pos_v_sample.z / fZRange.y);  // bc far plane changes between world space
+                const float3 pos_w_back = pos_w_front + normalize(pos_w_front - fCamPos) * fThickness * lerp(1, 1 + fThicknessZScale * fZRange.y, pos_v_sample.z / fZRange.y);  // bc far plane changes between world space
                 const float3 dir_w_front = normalize(pos_w_front - pos_w);
                 const float3 dir_w_back = normalize(pos_w_back - pos_w);
                 const float2 angles = float2(acosFast4(dot(dir_w_front, normal_w)), acosFast4(dot(dir_w_back, normal_w)));
@@ -951,7 +951,20 @@ void PS_GI(
                 const uint a = floor((angles_minmax.x + HALF_PI) * RCP_PI * BITMASK_SIZE);
                 const uint b = ceil((angles_minmax.y - angles_minmax.x) * RCP_PI * BITMASK_SIZE);  // in orig paper...an additional half pi, wtf?
                 const uint covered_bits = ((1 << b) - 1) << a;
+#if     YASSGI_DISABLE_IL == 0
+                const uint valid_bits = covered_bits & ~bitmask;
+                [branch]
+                if(valid_bits)
+                {
+                    const float3 normal_w_sample = mul(fViewMatrix, float4(geo_sample.xyz * float3(1, -1, 1), 1)).xyz;
+                    float3 radiance_sample = tex2Dlod(samp_blur_radiance, float4(uv_sample, mip_level, 0)).rgb;
+                    radiance_sample *= countbits(valid_bits) / (float)BITMASK_SIZE;
+                    radiance_sample *= dot(normal_w, dir_w_front) * (dot(normal_w_sample, dir_w_front) < -EPS);
+                    sum.rgb += max(0, radiance_sample * albedo);
+                }
+#endif
                 bitmask = bitmask | covered_bits;
+
 #endif  // YASSGI_USE_BITMASK == 0
 
                 dist_px += stride_px * exp2(step * fSpreadExp);
@@ -987,6 +1000,8 @@ void PS_GI(
     sum /= iDirCount;
 #if YASSGI_USE_BITMASK == 0
     sum.w = 1 - sum.w;
+#else
+    sum *= 2;  // I must have done something wrong but I dare not think of it.
 #endif
     il_ao.w = clamp(sum.w, 0.05, 1.0);
     il_ao.rgb = sum.rgb;
