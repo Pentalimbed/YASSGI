@@ -106,6 +106,9 @@
             LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
             OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
             SOFTWARE.
+    Screen Space Indirect Lighting with Visibility Bitmask. Olivier Therrien, Yannick Levesque, and Guillaume Gilet.
+        url:    https://arxiv.org/abs/2301.11376
+        credit: bitmask ao/il
     ReBLUR: A Hierarchical Recurrent Denoiser, Ray Tracing Gems II. Dmitry Zhdan, NVIDIA.
         url:    https://link.springer.com/book/10.1007/978-1-4842-7185-8
         credit: disocclusion by geometry
@@ -946,7 +949,7 @@ void PS_GI(
                 float2 angles_minmax = float2(min(angles.x, angles.y), max(angles.x, angles.y));
                 angles_minmax = clamp(angles_minmax, -HALF_PI, HALF_PI);
                 const uint a = floor((angles_minmax.x + HALF_PI) * RCP_PI * BITMASK_SIZE);
-                const uint b = ceil((angles_minmax.y - angles_minmax.x) * RCP_PI * BITMASK_SIZE);
+                const uint b = ceil((angles_minmax.y - angles_minmax.x) * RCP_PI * BITMASK_SIZE);  // in orig paper...an additional half pi, wtf?
                 const uint covered_bits = ((1 << b) - 1) << a;
                 bitmask = bitmask | covered_bits;
 #endif  // YASSGI_USE_BITMASK == 0
