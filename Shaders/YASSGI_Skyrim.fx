@@ -128,6 +128,7 @@
     normal: pointing outwards
     color & gi: ACEScg
     pos_v: view
+    pos_w: world
     angle: radian
 */
 /*  TODO
@@ -137,7 +138,7 @@
     o il
     * bent normal
     o thickness heuristic
-    * alternative bitmask impl (?)
+    o alternative bitmask impl (?)
     - hi-z buffer w/ cone tracing (?)
     o remove subtle grid like pattern
     * ibl
@@ -147,6 +148,7 @@
                   this shouldn't happen if we have proper thickness.
                   if I save more history like ReBLUR, I may be able to use that as determinant of "rapid changes".
                   hell no, just turn down max accum frames.)
+                  EDIT: kinda fixed with bitmask il i guess
 */
 
 #include "ReShade.fxh"
@@ -261,7 +263,7 @@ uniform int iConfigGuide <
               "> [Slices] to 1, noisier. You can compensate by increasing Max Accumulated Frames;\n"
               "> {YASSGI_DISABLE_FILTER} to 1 if you don't mind some grainy noise;\n"
               "> Turn down [Sample Distance] if you don't mind losing large scale GI;\n"
-              "> {YASSGI_USE_BITMASK} to 1 is a bit faster with IL turned on.\n"
+              "> {YASSGI_USE_BITMASK} to 1 is a bit faster if you want IL.\n"
               "> {YASSGI_DISABLE_IL} to 1 if you don't care about indirect lights.";
 	ui_category = "Configuration Guide";
 	ui_category_closed = true;
@@ -453,7 +455,7 @@ uniform float fAoStrength <
     ui_tooltip = "Negative value for non-physical-accurate exponential mixing.";
     ui_min = -2.0; ui_max = 1.0;
     ui_step = 0.01;
-> = -1.0;
+> = -1.5;
 
 #if YASSGI_DISABLE_IL == 0
 uniform float fIlStrength <
