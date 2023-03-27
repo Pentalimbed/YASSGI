@@ -9,7 +9,7 @@
 
     Free blue noise textures. Christoph Peters.
         url:    http://momentsingraphics.de/BlueNoise.html
-        credit: blue noise texture. <src>
+        credit: blue noise texture. <src CC0>
     RGB COLOURSPACE TRANSFORMATION MATRIX. Colour Developers.
         url:    https://www.colour-science.org/apps/
         credit: ACEScg <-> sRGB conversion matrices
