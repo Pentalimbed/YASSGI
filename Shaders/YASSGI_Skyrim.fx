@@ -367,12 +367,20 @@ uniform float fThickness <
     ui_label = "Thickness";
     ui_min = 0.0; ui_max = 30.0;
     ui_step = 0.1;
-> = 3;
+> = 10;
 
 uniform float fThicknessZScale <
     ui_type = "slider";
     ui_category = "Visual";
     ui_label = "Thickness Z Scaling";
+    ui_min = 0.0; ui_max = 1.0;
+    ui_step = 0.01;
+> = 0.02;
+
+uniform float fBackfaceLighting <
+    ui_type = "slider";
+    ui_category = "Visual";
+    ui_label = "Backface Lighting";
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
 > = 0.1;
@@ -465,6 +473,12 @@ uniform float fIlStrength <
     ui_min = 0.0; ui_max = 3.0;
     ui_step = 0.01;
 > = 2;
+
+uniform int iMixOrder <
+	ui_type = "combo";
+    ui_label = "Mixing Order";
+    ui_items = "IL First\0AO First\0";
+> = 1;
 #endif
 
 }
@@ -961,7 +975,8 @@ void PS_GI(
                     const float3 normal_w_sample = mul(fViewMatrix, float4(geo_sample.xyz * float3(1, -1, 1), 1)).xyz;
                     float3 radiance_sample = tex2Dlod(samp_blur_radiance, float4(uv_sample, mip_level, 0)).rgb;
                     radiance_sample *= countbits(valid_bits) / (float)BITMASK_SIZE;
-                    radiance_sample *= dot(normal_w, dir_w_front) * (dot(normal_w_sample, dir_w_front) < -EPS);
+                    radiance_sample *= dot(normal_w, dir_w_front);
+                    radiance_sample *= dot(normal_w_sample, dir_w_front) < -EPS ? 1.0 : fBackfaceLighting;
                     sum.rgb += max(0, radiance_sample * albedo);
                 }
 #endif
@@ -1141,9 +1156,14 @@ void PS_Display(
     {
         color.rgb = tex2D(samp_color, uv).rgb;
 #if YASSGI_DISABLE_IL == 0
-        color.rgb += il_ao.rgb * fIlStrength;
+        if(iMixOrder == 0)
+            color.rgb += il_ao.rgb * fIlStrength;
 #endif
         color.rgb = color.rgb * ao_mult;
+#if YASSGI_DISABLE_IL == 0
+        if(iMixOrder == 1)
+            color.rgb += il_ao.rgb * fIlStrength;
+#endif
         color.rgb = mul(g_colorOutputMat, color.rgb);
     }
     else if(iViewMode == 1)  // Depth
