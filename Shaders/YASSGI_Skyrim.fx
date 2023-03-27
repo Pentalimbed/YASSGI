@@ -167,6 +167,9 @@ namespace YASSGI_SKYRIM
 #define BUFFER_SIZE uint2(BUFFER_WIDTH, BUFFER_HEIGHT)
 #define PIXEL_UV_SIZE float2(BUFFER_RCP_WIDTH, BUFFER_RCP_HEIGHT)
 
+// bits of int
+#define BITMASK_SIZE 32
+
 #define NOISE_SIZE 256
 
 #define INTERLEAVED_SIZE_PX 4
@@ -187,6 +190,10 @@ namespace YASSGI_SKYRIM
 
 #ifndef YASSGI_USE_RECONSTRUCTED_NORMAL
 #   define YASSGI_USE_RECONSTRUCTED_NORMAL 0
+#endif
+
+#ifndef YASSGI_USE_BITMASK
+#   define YASSGI_USE_BITMASK 1
 #endif
 
 
@@ -217,7 +224,9 @@ uniform float4x4 fViewMatrix         < source = "ViewMatrix"; >;
 uniform float4x4 fProjMatrix         < source = "ProjMatrix"; >;
 uniform float4x4 fViewProjMatrix     < source = "ViewProjMatrix"; >;
 uniform float4x4 fInvViewProjMatrix  < source = "InvViewProjMatrix"; >;
-uniform float4x4 fPrevViewProjMatrix < source = "PrevViewProjMatrix"; >;
+uniform float4x4 fProjMatrixJit        < source = "ProjMatrix Jittered"; >;
+uniform float4x4 fViewProjMatrixJit    < source = "ViewProjMatrix Jittered"; >;
+uniform float4x4 fInvViewProjMatrixJit < source = "InvViewProjMatrix Jittered"; >;
 
 uniform float fFov     < source = "FieldOfView"; >;
 uniform float3 fCamPos < source = "Position"; >;
@@ -246,9 +255,8 @@ uniform int iConfigGuide <
               "Here is what to tweak if you find your card burning (ranking from least to most visual impact):\n"
               "> [Spread Exponent] to max;\n"
               "> {YASSGI_PREBLUR_SCALE} to 0.125 (1/8, idk how low you can go without ruining everything);\n"
-              "> [Spread Jitter] to 0.5 or less, too low you'll get patterns;\n"
               "> [Slices] to 1, noisier. You can compensate by increasing Max Accumulated Frames;\n"
-              "> {YASSGI_DISABLE_FILTER} to 1 if you don't mind some grainy IL noise;\n"
+              "> {YASSGI_DISABLE_FILTER} to 1 if you don't mind some grainy noise;\n"
               "> Turn down [Sample Distance] if you don't mind losing large scale GI;\n"
               "> {YASSGI_DISABLE_IL} to 1 if you don't care about indirect lights.";
 	ui_category = "Configuration Guide";
@@ -322,6 +330,7 @@ static const float fLodRangePx = 48;
 //     ui_step = 0.01;
 // > = 0.65;
 
+#if YASSGI_USE_BITMASK == 0
 uniform float fFxRange <
     ui_type = "slider";
     ui_category = "Visual";
@@ -345,6 +354,23 @@ uniform float fThinOccluderCompensation <
     ui_min = 0; ui_max = 0.7;
     ui_step = 0.01;
 > = 0.7;
+#else
+uniform float fThickness <
+    ui_type = "slider";
+    ui_category = "Visual";
+    ui_label = "Thickness";
+    ui_min = 0.0; ui_max = 100.0;
+    ui_step = 0.1;
+> = 1;
+
+uniform float fThicknessZScale <
+    ui_type = "slider";
+    ui_category = "Visual";
+    ui_label = "Thickness Z Scaling";
+    ui_min = 0.0; ui_max = 5000.0;
+    ui_step = 1;
+> = 2500;
+#endif  // YASSGI_USE_BITMASK == 0
 
 #if YASSGI_DISABLE_IL == 0
 uniform float fLightSrcThres <
@@ -378,7 +404,7 @@ uniform float fAlbedoNorm <
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
 > = 0.8;
-#endif
+#endif  // YASSGI_DISABLE_IL == 0
 
 #if YASSGI_DISABLE_FILTER == 0
 uniform int iMaxAccumFrames <
@@ -395,7 +421,7 @@ uniform float fDisocclThres <
     ui_label = "Disocclusion Threshold";
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
-> = 0.4;
+> = 0.3;
 
 // uniform float fEdgeThres <
 //     ui_type = "slider";
@@ -421,9 +447,14 @@ uniform float fAoStrength <
     ui_category = "Mixing";
     ui_label = "AO";
     ui_tooltip = "Negative value for non-physical-accurate exponential mixing.";
-    ui_min = -2.0; ui_max = 1.0;
+    ui_min = -4.0; ui_max = 2.0;
     ui_step = 0.01;
-> = -1.0;
+> = 
+#if YASSGI_USE_BITMASK == 0
+-1.0;
+#else
+2.0;
+#endif
 
 #if YASSGI_DISABLE_IL == 0
 uniform float fIlStrength <
@@ -512,17 +543,17 @@ float rawZToLinear01(float raw_z)
 float3 uvzToWorld(float2 uv, float raw_z)
 {
     float4 pos_s = float4((uv * 2 - 1) * float2(1, -1) * raw_z, raw_z, 1);
-    float4 pos = mul(transpose(fInvViewProjMatrix), pos_s);
+    float4 pos = mul(transpose(fInvViewProjMatrixJit), pos_s);
     return pos.xyz / pos.w;
 }
 float3 uvzToView(float2 uv, float raw_z)
 {
-    float4x4 inv_proj = mul(fInvViewProjMatrix, fViewMatrix);
+    float4x4 inv_proj = mul(fInvViewProjMatrixJit, fViewMatrix);
     float4 pos_view = mul(transpose(inv_proj), float4((uv * 2 - 1) * float2(1, -1) * raw_z, raw_z, 1));
     return pos_view.xyz / pos_view.w;
 }
 float3 viewToUvz(float3 pos){
-    float4 pos_clip = mul(transpose(fProjMatrix), float4(pos, 1));
+    float4 pos_clip = mul(transpose(fProjMatrixJit), float4(pos, 1));
     pos_clip.xyz /= pos_clip.w;
     pos_clip.xy = (pos_clip.xy / pos_clip.z * float2(1, -1) + 1) * 0.5;
     return pos_clip.xyz;
@@ -721,8 +752,7 @@ void PS_Setup(
 
 #if YASSGI_USE_RECONSTRUCTED_NORMAL == 0
     float3 normal;
-    [branch]
-    if(iFrameCount % 2)
+    if(iFrameCount % 2 == 0)
         normal = unpackNormal(tex2Dfetch(Skyrim::samp_normal, px_coord).xy);
     else
         normal = unpackNormal(tex2Dfetch(Skyrim::samp_normal_swap, px_coord).xy);
@@ -786,7 +816,6 @@ void PS_GI(
     const float3 pos_v = uvzToView(uv, raw_z) * 0.99995;  // closer to the screen bc we're using blurred geometry
     const float3 dir_v_view = -normalize(pos_v);
 
-    // 
     const float3 pos_w = uvzToWorld(uv, raw_z);
     const float3 dir_w_view = normalize(fCamPos - pos_w);
     const float3 normal_w = mul(fViewMatrix, float4(normal_v * float3(1, -1, 1), 1)).xyz;
@@ -808,9 +837,11 @@ void PS_GI(
     const float angle_pizza = PI * rcp_dir_count;
     const float stride_px = max(1, fBaseStridePx * (0.5 + blue.x * fStrideJitter));
     const float log2_stride_px = log2(stride_px);
+#if YASSGI_USE_BITMASK == 0
     const float falloff_start_px = fFxRange * (1 - fFxFalloff);
     const float falloff_mul = -rcp(fFxRange);
     const float falloff_add = falloff_start_px / fFxFalloff + 1;
+#endif
 
     // per slice
     float4 sum = 0;  // visibility
@@ -838,7 +869,11 @@ void PS_GI(
         // Algorithm 1 in the GTAO paper
         // 0 for -dir_px_slice, 1 for +dir_px_slice
         const float2 dists = intersectBox(px_coord, dir_px_slice, float4(0, 0, BUFFER_SIZE));
+#if YASSGI_USE_BITMASK == 0
         float h0, h1;
+#else
+        uint bitmask = 0;
+#endif  // YASSGI_USE_BITMASK == 0
         [unroll]
         for(uint side = 0; side <= 1; ++side)
         {
@@ -850,7 +885,9 @@ void PS_GI(
             uint step = 0;
             float dist_px = stride_px;
             float hor_cos = min_hor_cos;
+#if YASSGI_USE_BITMASK == 0
             float3 radiance_sample = 0;
+#endif  // YASSGI_USE_BITMASK == 0
             [loop]
             while(dist_px < max_dist && step < 64)  // preventing infinite loop when you tweak params in ReShade
             {
@@ -863,6 +900,7 @@ void PS_GI(
                 const float4 geo_sample = tex2Dlod(samp_blur_geo, float4(uv_sample, mip_level, 0));
                 const float3 pos_v_sample = uvzToView(uv_sample, geo_sample.w);
                 
+#if YASSGI_USE_BITMASK == 0
                 [branch]
                 if(!isWeapon(pos_v_sample.z))
                 {
@@ -876,7 +914,7 @@ void PS_GI(
                     float hor_cos_sample = dot(dir_v_hor, dir_v_view);
                     hor_cos_sample = lerp(min_hor_cos, hor_cos_sample, weight);
 
-#if YASSGI_DISABLE_IL
+#if     YASSGI_DISABLE_IL == 1
                     hor_cos = max(hor_cos, hor_cos_sample);
 #else
                     [branch]
@@ -897,20 +935,37 @@ void PS_GI(
 
                         hor_cos = hor_cos_sample;
                     }
-#endif
+#endif  // YASSGI_DISABLE_IL == 1
                 }
+#else
+                const float3 pos_w_front = uvzToWorld(uv_sample, geo_sample.w);
+                const float3 pos_w_back = pos_w_front + normalize(pos_w_front - fCamPos) * fThickness * lerp(1, fThicknessZScale, pos_v_sample.z / fZRange.y);  // bc far plane changes between world space
+                const float3 dir_w_front = normalize(pos_w_front - pos_w);
+                const float3 dir_w_back = normalize(pos_w_back - pos_w);
+                const float2 angles = float2(acosFast4(dot(dir_w_front, normal_w)), acosFast4(dot(dir_w_back, normal_w)));
+                float2 angles_minmax = float2(min(angles.x, angles.y), max(angles.x, angles.y));
+                angles_minmax = clamp(angles_minmax, -HALF_PI, HALF_PI);
+                const uint a = floor((angles_minmax.x + HALF_PI) * RCP_PI * BITMASK_SIZE);
+                const uint b = ceil((angles_minmax.y - angles_minmax.x) * RCP_PI * BITMASK_SIZE);
+                const uint covered_bits = ((1 << b) - 1) << a;
+                bitmask = bitmask | covered_bits;
+#endif  // YASSGI_USE_BITMASK == 0
 
                 dist_px += stride_px * exp2(step * fSpreadExp);
                 ++step;  // 2 same stride at the start. more precise perhaps (?)
             }
 
+#if YASSGI_USE_BITMASK == 0
             const float h = acosFast4(hor_cos);
             const float angle_hor = n + clamp(side_sign * h - n, -HALF_PI, HALF_PI);  // XeGTAO suggested skipping clamping. Hmmm...
             sum.w += saturate(length(normal_proj) * 0.25 * (cos_n + 2 * angle_hor * sin_n - cos(2 * angle_hor - n)));
             
             side ? h1 : h0 = h;
+#endif
         }
-
+#if YASSGI_USE_BITMASK == 1
+        sum.w += countbits(bitmask) / (float)BITMASK_SIZE;
+#endif
         // // bent normal (Algorithm 2)
         // const float t0 = (6 * sin(h0 - n) - sin(3 * h0 - n) +
         //             6 * sin(h1 - n) - sin(3 * h1 - n) + 
@@ -927,7 +982,10 @@ void PS_GI(
     // normal_bent.w = 1;
 
     sum /= iDirCount;
-    il_ao.w = clamp(1 - sum.w, 0, 0.95);  // got -inf here...
+#if YASSGI_USE_BITMASK == 0
+    sum.w = 1 - sum.w;
+#endif
+    il_ao.w = clamp(sum.w, 0.05, 1.0);
     il_ao.rgb = sum.rgb;
     // il_ao = temp;
 }
@@ -938,14 +996,8 @@ void PS_Accum(
     out float4 il_ao_accum : SV_Target0, out float temporal : SV_Target1)
 {
     const uint2 px_coord = uv * BUFFER_SIZE;
-
-    const float4 geo_curr = tex2Dfetch(samp_geo, px_coord);
-
+    
     const float2 uv_prev = uv + tex2D(Skyrim::samp_motion, uv).xy;
-    // const float3 pos_w = uvzToWorld(uv, geo_curr.w);
-    // float4 uv_prev = mul(transpose(fPrevViewProjMatrix), float4(pos_w, 1));
-    // uv_prev.xyz /= uv_prev.w;
-    // uv_prev.xy = (uv_prev.xy / uv_prev.z * float2(1, -1) + 1) * 0.5;
     [branch]
     if(!isInScreen(uv_prev.xy))
     {
@@ -957,6 +1009,7 @@ void PS_Accum(
     const float4 temporal_prev = tex2D(samp_temporal_geo_prev, uv_prev.xy);
     const float hist_len_prev = temporal_prev.x;
 
+    const float4 geo_curr = tex2Dfetch(samp_geo, px_coord);
     const float raw_z_curr = geo_curr.w;
     const float raw_z_prev = temporal_prev.y;
     const float z_curr = rawZToLinear01(raw_z_curr) * fFarPlane;
