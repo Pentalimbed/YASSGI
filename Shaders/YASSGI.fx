@@ -158,6 +158,12 @@ namespace YASSGI
 // Constants
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
+#if __RENDERER__ == 0x9000
+#   define DX9 1
+#else
+#   define DX9 0
+#endif
+
 #define PI      3.14159265358979323846264
 #define HALF_PI 1.5707963267948966
 #define RCP_PI  0.3183098861837067
@@ -186,8 +192,12 @@ namespace YASSGI
 #   define YASSGI_DISABLE_IL 0
 #endif
 
-#ifndef YASSGI_USE_BITMASK
-#   define YASSGI_USE_BITMASK 1
+#if DX9 == 0
+#   ifndef YASSGI_USE_BITMASK
+#       define YASSGI_USE_BITMASK 1
+#   endif
+#else
+#   define YASSGI_USE_BITMASK 0
 #endif
 
 
@@ -422,7 +432,7 @@ uniform float fDisocclThres <
     ui_type = "slider";
     ui_category = "Filter";
     ui_label = "Disocclusion Threshold";
-    ui_tooltip = "Tweak this till most edges are visible in 'Accumulated Frames' debug view.";
+    ui_tooltip = "Lower this to suppress ghosting.";
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
 > = 0.3;
@@ -431,7 +441,7 @@ uniform float fEdgeThres <
     ui_type = "slider";
     ui_category = "Filter";
     ui_label = "Edge Detection Threshold";
-    ui_tooltip = "Tweak this till most edges are not visible in 'Accumulated Frames' debug view, after the above.";
+    ui_tooltip = "Lower this to suppress firefly on edges.";
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.001;
 > = 0.1;
@@ -477,7 +487,7 @@ uniform int iMacroGuide <
               "YASSGI_PREBLUR_SCALE: determines how detailed lighting calculation is.\n\n"
               "YASSGI_USE_BITMASK: switches between two gi algorithm of different flavor.\n\n"
               "\t0 uses GTAO/HBIL which is industry standard, but does not handle thickness well and generates more halos.\n\n"
-              "\t1 uses Bitmask IL which has intrinsic thickness support. This is the author's pick.";
+              "\t1 uses Bitmask IL which has intrinsic thickness support. This is the author's pick. (Unavailable to DX9 games)";
 	ui_category = "Preprocessor Guide";
 	ui_category_closed = true;
 	ui_label = " ";
@@ -610,17 +620,21 @@ float3 fakeAlbedo(float3 color)
 
 // <---- Sampling ---->
 
-float radicalInverse(uint i)
-{
-    uint bits = (i << 16u) | (i >> 16u);
-    bits = (bits & 0x55555555u) << 1u | (bits & 0xAAAAAAAAu) >> 1u;
-    bits = (bits & 0x33333333u) << 2u | (bits & 0xCCCCCCCCu) >> 2u;
-    bits = (bits & 0x0F0F0F0Fu) << 4u | (bits & 0xF0F0F0F0u) >> 4u;
-    bits = (bits & 0x00FF00FFu) << 8u | (bits & 0xFF00FF00u) >> 8u;
-    return bits / MAX_UINT_F;  // can't use 0xffffffff for some reason
+float random3dTo1d(float3 value, float a, float3 b)
+{			
+	float3 small_value = sin(value);
+	float  random = dot(small_value, b);
+	random = frac(sin(random) * a);
+	return random;
 }
-float2 hammersley(uint i, uint N) {return float2(float(i) / N, radicalInverse(i));}
+float2 random3dTo2d(float3 value){
+	return float2(
+		random3dTo1d(value, 14375.5964, float3(15.637, 76.243, 37.168)),
+		random3dTo1d(value, 14684.6034, float3(45.366, 23.168, 65.918))
+	);
+}
 
+#if DX9 == 0
 uint3 pcg3d(uint3 v) {
 
     v = v * 1664525u + 1013904223u;
@@ -655,6 +669,7 @@ uint4 pcg4d(uint4 v)
     
     return v;
 }
+#endif
 
 // <---- Misc ---->
 
@@ -727,7 +742,7 @@ void PS_Setup(
     if(isWeapon(z))
     {
         z *= fWeapDepthMult;
-        normal.z /= fWeapDepthMult;
+        normal = normalize(float3(normal.xy, normal.z / fWeapDepthMult));
     }
 
     geo = float4(normal, z);
@@ -750,12 +765,12 @@ void PS_PreBlur(
         const float2 offset_uv = offset_px / YASSGI_PREBLUR_SCALE * 0.5 * PIXEL_UV_SIZE;
         const float2 uv_sample = uv + offset_uv;
 
-        const float4 geo_sample = tex2D(samp_geo, uv_sample);
+        const float4 geo_sample = tex2Dlod(samp_geo, float4(uv_sample, 0, 0));
 
         const float w = exp(-0.66 * length(offset_px)) * isInScreen(uv_sample);
         sum_normal += geo_sample.xyz * w;
         sum_z += geo_sample.w * w;
-        sum_color += tex2D(samp_color, uv_sample).rgb * w;
+        sum_color += tex2Dlod(samp_color, float4(uv_sample, 0, 0)).rgb * w;
         sum_w += w;
     }
     blur_geo = float4(sum_normal, sum_z) / sum_w;
@@ -787,9 +802,14 @@ void PS_GI(
     [branch]
     if(isWeapon(pos_v.z) || isSky(pos_v.z))  // leave sky alone
         return;
-    
+
+#if DX9
+    const float2 rand = random3dTo2d(float3(uv, iFrameCount * RCP_PI));
+    const float4 blue = tex2Dfetch(samp_blue, uint2((uv + rand.xy) * BUFFER_SIZE) % NOISE_SIZE);
+#else
     const uint3 rand = pcg3d(uint3(px_coord, iFrameCount));
     const float4 blue = tex2Dfetch(samp_blue, (px_coord + rand.xy) % NOISE_SIZE);
+#endif
     // // interleaved sampling (enough for ao)
     // uint2 px_coord_shifted = px_coord + blue.xy * 8;  // de-grid
     // const uint px_idx = (dot(px_coord_shifted % INTERLEAVED_SIZE_PX, uint2(1, INTERLEAVED_SIZE_PX)) + (iFrameCount % 16)) % 16;
@@ -837,7 +857,7 @@ void PS_GI(
         // Algorithm 1 in the GTAO paper
         // 0 for -dir_px_slice, 1 for +dir_px_slice
         const float2 dists = intersectBox(px_coord, dir_px_slice, float4(0, 0, BUFFER_SIZE));
-        [unroll]
+        [loop]
         for(uint side = 0; side <= 1; ++side)
         {
             const int side_sign = side * 2 - 1;
@@ -877,7 +897,7 @@ void PS_GI(
                     float hor_cos_sample = dot(dir_v_hor, dir_v_view);
                     hor_cos_sample = lerp(min_hor_cos, hor_cos_sample, weight);
 
-#if     YASSGI_DISABLE_IL == 1
+#   if YASSGI_DISABLE_IL == 1
                     hor_cos = max(hor_cos, hor_cos_sample);
 #else
                     [branch]
@@ -885,8 +905,8 @@ void PS_GI(
                     {
                         float3 radiance_sample_new = tex2Dlod(samp_blur_radiance, float4(uv_sample, mip_level, 0)).rgb;
                         radiance_sample_new = luminance(radiance_sample_new) > fLightSrcThres ? radiance_sample_new : 0;
-                        // radiance_sample_new *= ilIntegral(cos_n * side_sign, sin_n, hor_cos, hor_cos_sample);
-                        radiance_sample_new *= computeHorizonContribution(dir_v_view, dir_v_slice_local, normal_v, acosFast4(hor_cos_sample), acosFast4(hor_cos));
+                        // radiance_sample_new *= ilIntegral(cos_n, sin_n, hor_cos, hor_cos_sample);
+                        radiance_sample_new *= computeHorizonContribution(dir_v_view, dir_v_slice_local, normal_v, acosFast4(hor_cos_sample), acosFast4(hor_cos)); 
 
                         // depth filtering. HBIL pp.38
                         float t = smoothstep(0, 1, dot(geo_sample.xyz, offset_v));
@@ -914,7 +934,7 @@ void PS_GI(
                 const uint a = floor((angles_minmax.x + HALF_PI) * RCP_PI * BITMASK_SIZE);
                 const uint b = ceil((angles_minmax.y - angles_minmax.x) * RCP_PI * BITMASK_SIZE);  // in orig paper...an additional half pi, wtf?
                 const uint covered_bits = ((1 << b) - 1) << a;
-#if     YASSGI_DISABLE_IL == 0
+#   if YASSGI_DISABLE_IL == 0
                 const uint valid_bits = covered_bits & ~bitmask;
                 [branch]
                 if(valid_bits)
@@ -925,9 +945,8 @@ void PS_GI(
                     radiance_sample *= dot(geo_sample.xyz, dir_v_front) < -EPS ? 1.0 : fBackfaceLighting;
                     sum.rgb += max(0, radiance_sample * albedo);
                 }
-#endif
+#   endif  // YASSGI_DISABLE_IL == 0
                 bitmask = bitmask | covered_bits;
-
 #endif  // YASSGI_USE_BITMASK == 0
 
                 dist_px += stride_px * exp2(step * fSpreadExp);
@@ -1087,7 +1106,7 @@ void PS_Display(
     [branch]
     if(iViewMode == 0)  // None
     {
-        color.rgb = tex2D(samp_color, uv).rgb;
+        color.rgb = tex2Dlod(samp_color, float4(uv, 0, 0)).rgb;
 #if YASSGI_DISABLE_IL == 0
         if(iMixOrder == 0)
             color.rgb += il_ao.rgb * fIlStrength;
@@ -1126,7 +1145,7 @@ void PS_Display(
 #endif
     else if(iViewMode == 5)  // Accum
     {
-        color.rgb = tex2D(samp_temporal, uv).x / iMaxAccumFrames;
+        color.rgb = tex2Dlod(samp_temporal, float4(uv, 0, 0)).x / iMaxAccumFrames;
     }
 }
 

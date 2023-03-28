@@ -938,8 +938,8 @@ void PS_GI(
                     {
                         float3 radiance_sample_new = tex2Dlod(samp_blur_radiance, float4(uv_sample, mip_level, 0)).rgb;
                         radiance_sample_new = luminance(radiance_sample_new) > fLightSrcThres ? radiance_sample_new : 0;
-                        // radiance_sample_new *= ilIntegral(cos_n * side_sign, sin_n, hor_cos, hor_cos_sample);
-                        radiance_sample_new *= computeHorizonContribution(dir_w_view, dir_w_tangent, normal_w, acosFast4(hor_cos_sample), acosFast4(hor_cos));
+                        // radiance_sample_new *= ilIntegral(cos_n, sin_n, hor_cos, hor_cos_sample);
+                        radiance_sample_new *= computeHorizonContribution(dir_w_view, side_sign * dir_w_tangent, normal_w, acosFast4(hor_cos_sample), acosFast4(hor_cos));
 
                         // depth filtering. HBIL pp.38
                         float t = smoothstep(0, 1, dot(geo_sample.xyz, offset_v));
