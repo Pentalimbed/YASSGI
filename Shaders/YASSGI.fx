@@ -145,6 +145,7 @@
     x adaptive light src thres (?)
     - simple geometric light src
     - dx9 compatibility
+    o edge firefly suppression
 */
 
 #include "ReShade.fxh"
@@ -210,23 +211,7 @@ static const float3x3 g_ACEScgToSRGB = float3x3(
 
 // <---- Backend ---->
 
-// uniform float fFarPlane  < source = "Far"; >;
-// uniform float fNearPlane < source = "Near"; >;
-
-// uniform float4x4 fViewMatrix         < source = "ViewMatrix"; >;
-// uniform float4x4 fProjMatrix         < source = "ProjMatrix"; >;
-// uniform float4x4 fViewProjMatrix     < source = "ViewProjMatrix"; >;
-// uniform float4x4 fInvViewProjMatrix  < source = "InvViewProjMatrix"; >;
-// uniform float4x4 fProjMatrixJit        < source = "ProjMatrix Jittered"; >;
-// uniform float4x4 fViewProjMatrixJit    < source = "ViewProjMatrix Jittered"; >;
-// uniform float4x4 fInvViewProjMatrixJit < source = "InvViewProjMatrix Jittered"; >;
-
-// uniform float fFov     < source = "FieldOfView"; >;
-// uniform float3 fCamPos < source = "Position"; >;
-
 uniform int   iFrameCount < source = "framecount"; >;
-// uniform float fTimer      < source = "TimerReal"; >;
-// uniform float fFrameTime  < source = "TimingsReal"; >;
 
 // <---- UI ---->
 
@@ -338,14 +323,6 @@ uniform float fMaxSampleDistPx <
 // > = 48;
 static const float fLodRangePx = 32;
 
-// uniform float fAngleJitterScale <
-//     ui_type = "slider";
-//     ui_category = "Sampling";
-//     ui_label = "Angle Jitter Scale";
-//     ui_min = 0; ui_max = 1;
-//     ui_step = 0.01;
-// > = 0.65;
-
 #if YASSGI_USE_BITMASK == 0
 uniform float fFxRange <
     ui_type = "slider";
@@ -445,17 +422,19 @@ uniform float fDisocclThres <
     ui_type = "slider";
     ui_category = "Filter";
     ui_label = "Disocclusion Threshold";
+    ui_tooltip = "Tweak this till most edges are visible in 'Accumulated Frames' debug view.";
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
 > = 0.3;
 
-// uniform float fEdgeThres <
-//     ui_type = "slider";
-//     ui_category = "Filter";
-//     ui_label = "Edge Detection Threshold";
-//     ui_min = 0.0; ui_max = 1.0;
-//     ui_step = 0.001;
-// > = 0.005;
+uniform float fEdgeThres <
+    ui_type = "slider";
+    ui_category = "Filter";
+    ui_label = "Edge Detection Threshold";
+    ui_tooltip = "Tweak this till most edges are not visible in 'Accumulated Frames' debug view, after the above.";
+    ui_min = 0.0; ui_max = 1.0;
+    ui_step = 0.001;
+> = 0.1;
 
 // uniform float fBlurRadius <
 //     ui_type = "slider";
@@ -997,10 +976,10 @@ void PS_Accum(
     const float4 temporal_prev = tex2D(samp_temporal_z_prev, uv_prev.xy);
     const float hist_len_prev = temporal_prev.x;
 
-    // const float4 z_gather = tex2DgatherA(samp_geo, uv);
-    // const float z_min = min(min(z_gather.x, z_gather.y), min(z_gather.z, z_gather.w));
-    // const float z_max = max(max(z_gather.x, z_gather.y), max(z_gather.z, z_gather.w));
-    // bool on_edge = z_max - z_min > fEdgeThres * RESHADE_DEPTH_LINEARIZATION_FAR_PLANE * 0.001;
+    const float4 z_gather = tex2DgatherA(samp_geo, uv);
+    const float z_min = min(min(z_gather.x, z_gather.y), min(z_gather.z, z_gather.w));
+    const float z_max = max(max(z_gather.x, z_gather.y), max(z_gather.z, z_gather.w));
+    bool on_edge = z_max - z_min > fEdgeThres * RESHADE_DEPTH_LINEARIZATION_FAR_PLANE * 0.001;
 
     const float4 geo_curr = tex2Dfetch(samp_geo, px_coord);
     const float z_curr = geo_curr.w;
@@ -1019,7 +998,7 @@ void PS_Accum(
 
     // disocclusion
     const float delta = abs(z_curr - z_prev) * abs(dot(normal_curr, normalize(uvzToView(uv, z_curr))));
-    const bool occluded = delta > fDisocclThres * (1 + z_curr) * 0.1;
+    const bool occluded = (delta > fDisocclThres * (1 + z_curr) * 0.1) && !on_edge;
 
     temporal = min(hist_len_prev * !occluded + 1, iMaxAccumFrames);
 
