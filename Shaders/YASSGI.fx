@@ -249,7 +249,6 @@ uniform int iConfigGuide <
               "> {YASSGI_PREBLUR_SCALE} to 0.125 (1/8, idk how low you can go without ruining everything);\n"
               "> [Slices] to 1, noisier. You can compensate by increasing Max Accumulated Frames;\n"
               "> Turn up [Base Stride] to skip minute details;\n"
-              "> {YASSGI_DISABLE_FILTER} to 1 if you don't mind some grainy noise;\n"
               "> Turn down [Sample Distance] if you don't mind losing large scale GI;\n"
               "> {YASSGI_USE_BITMASK} to 1 is a bit faster if you want IL.\n"
               "> {YASSGI_DISABLE_IL} to 1 if you don't care about indirect lights.";
@@ -495,10 +494,10 @@ uniform int iMixOrder <
 #endif
 
 uniform int iMacroGuide <
-	ui_text = "YASSGI_DISABLE_IL: set to 1 disables indirect light calculation for better performance.\n"
-              "YASSGI_PREBLUR_SCALE: determines how detailed lighting calculation is.\n"
-              "YASSGI_USE_BITMASK: switches between two gi algorithm of different flavor.\n"
-              "\t0 uses GTAO/HBIL which is industry standard, but does not handle thickness well and generates more halos."
+	ui_text = "YASSGI_DISABLE_IL: set to 1 disables indirect light calculation for better performance.\n\n"
+              "YASSGI_PREBLUR_SCALE: determines how detailed lighting calculation is.\n\n"
+              "YASSGI_USE_BITMASK: switches between two gi algorithm of different flavor.\n\n"
+              "\t0 uses GTAO/HBIL which is industry standard, but does not handle thickness well and generates more halos.\n\n"
               "\t1 uses Bitmask IL which has intrinsic thickness support. This is the author's pick.";
 	ui_category = "Preprocessor Guide";
 	ui_category_closed = true;
@@ -1146,12 +1145,10 @@ void PS_Display(
         color.rgb = mul(g_colorOutputMat, il_ao.rgb * fIlStrength);
     }
 #endif
-#if YASSGI_DISABLE_FILTER == 0
     else if(iViewMode == 5)  // Accum
     {
         color.rgb = tex2D(samp_temporal, uv).x / iMaxAccumFrames;
     }
-#endif
 }
 
 technique YASSGI <ui_tooltip = "NOTE: This shader requires a motion vector/optical flow shader (google it!)";>
