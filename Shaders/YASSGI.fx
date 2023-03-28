@@ -290,6 +290,7 @@ uniform uint iDirCount <
     ui_type = "slider";
     ui_category = "Sampling";
     ui_label = "Slices";
+    ui_tooltip = "The more slices, the less noisy of the raw ouput.";
     ui_min = 1; ui_max = 4;
 > = 2;  
 
@@ -297,6 +298,7 @@ uniform float fBaseStridePx <
     ui_type = "slider";
     ui_category = "Sampling";
     ui_label = "Base Stride (px)";
+    ui_tooltip = "The greater the stride, the more it skips over small objects.";
     ui_min = 1; ui_max = 64;
     ui_step = 1;
 > = 16;
@@ -305,6 +307,7 @@ uniform float fSpreadExp <
     ui_type = "slider";
     ui_category = "Sampling";
     ui_label = "Spread Exponent";
+    ui_tooltip = "Makes further samples less accurate but saves performance.";
     ui_min = 0.0; ui_max = 3.0;
     ui_step = 0.01;
 > = 2.5;
@@ -313,6 +316,7 @@ uniform float fStrideJitter <
     ui_type = "slider";
     ui_category = "Sampling";
     ui_label = "Stride Jitter";
+    ui_tooltip = "A reasonable amount of jitter helps remove the unnatural shape/pattern of the AO.";
     ui_min = 0; ui_max = 1;
     ui_step = 0.01;
 > = 0.66;
@@ -321,6 +325,7 @@ uniform float fMaxSampleDistPx <
     ui_type = "slider";
     ui_category = "Sampling";
     ui_label = "Sample Distance (px)";
+    ui_tooltip = "How far in screen should an object contribute to its surroundings.";
     ui_min = 2; ui_max = BUFFER_WIDTH;
     ui_step = 1;
 > = BUFFER_WIDTH * 0.2;
@@ -332,7 +337,7 @@ uniform float fMaxSampleDistPx <
 //     ui_min = 2; ui_max = 64;
 //     ui_step = 1;
 // > = 48;
-static const float fLodRangePx = 48;
+static const float fLodRangePx = 32;
 
 // uniform float fAngleJitterScale <
 //     ui_type = "slider";
@@ -379,6 +384,7 @@ uniform float fThicknessZScale <
     ui_type = "slider";
     ui_category = "Visual";
     ui_label = "Thickness Z Scaling";
+    ui_tooltip = "Makes further object thicker.";
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
 > = 0.02;
@@ -387,6 +393,7 @@ uniform float fBackfaceLighting <
     ui_type = "slider";
     ui_category = "Visual";
     ui_label = "Backface Lighting";
+    ui_tooltip = "Allow an object's backside to illuminate others. A touch of this simulates subsurface scattering of grass and foilage.";
     ui_min = 0.0; ui_max = 1.0;
     ui_step = 0.01;
 > = 0.1;
@@ -486,6 +493,18 @@ uniform int iMixOrder <
     ui_items = "IL First\0AO First\0";
 > = 1;
 #endif
+
+uniform int iMacroGuide <
+	ui_text = "YASSGI_DISABLE_IL: set to 1 disables indirect light calculation for better performance.\n"
+              "YASSGI_PREBLUR_SCALE: determines how detailed lighting calculation is.\n"
+              "YASSGI_USE_BITMASK: switches between two gi algorithm of different flavor.\n"
+              "\t0 uses GTAO/HBIL which is industry standard, but does not handle thickness well and generates more halos."
+              "\t1 uses Bitmask IL which has intrinsic thickness support. This is the author's pick.";
+	ui_category = "Preprocessor Guide";
+	ui_category_closed = true;
+	ui_label = " ";
+	ui_type = "radio";
+>;
 
 }
 
