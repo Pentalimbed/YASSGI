@@ -1154,7 +1154,7 @@ void PS_Display(
 #endif
 }
 
-technique YASSGI
+technique YASSGI <ui_tooltip = "NOTE: This shader requires a motion vector/optical flow shader (google it!)";>
 {
     pass {
         VertexShader = PostProcessVS;
