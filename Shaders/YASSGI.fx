@@ -691,11 +691,11 @@ float3 projectToPlane(float3 v, float3 normal)
 }
 
 // HBIL pp.29
-float ilIntegral(float nx, float ny, float cos_prev, float cos_new)
+float ilIntegral(float nx, float ny, float sin_prev, float sin_new)
 {
-    float delta_angle = acosFast4(cos_prev) - acosFast4(cos_new);
-    float sin_prev = sqrt(1 - cos_prev * cos_prev);
-    float sin_new = sqrt(1 - cos_new * cos_new);
+    float delta_angle = asinFast4(sin_prev) - asinFast4(sin_new);
+    float cos_prev = sqrt(1 - sin_prev * sin_prev);
+    float cos_new = sqrt(1 - sin_new * sin_new);
     return 0.5 * nx * (delta_angle + sin_prev * cos_prev - sin_new * cos_new) + 0.5 * ny * (sin_prev * sin_prev - sin_new * sin_new);
 }
 
