@@ -227,18 +227,13 @@ uniform float fNearPlane < source = "Near"; >;
 
 uniform float4x4 fViewMatrix         < source = "ViewMatrix"; >;
 uniform float4x4 fProjMatrix         < source = "ProjMatrix"; >;
+uniform float4x4 fInvProjMatrix      < source = "InvProjMatrix"; >;
 uniform float4x4 fViewProjMatrix     < source = "ViewProjMatrix"; >;
 uniform float4x4 fInvViewProjMatrix  < source = "InvViewProjMatrix"; >;
-uniform float4x4 fProjMatrixJit        < source = "ProjMatrix Jittered"; >;
-uniform float4x4 fViewProjMatrixJit    < source = "ViewProjMatrix Jittered"; >;
-uniform float4x4 fInvViewProjMatrixJit < source = "InvViewProjMatrix Jittered"; >;
 
-uniform float fFov     < source = "FieldOfView"; >;
-uniform float3 fCamPos < source = "Position"; >;
+uniform float3 fCamPos < source = "EyePosition"; >;
 
-uniform int   iFrameCount < source = "FrameCount"; >;
-uniform float fTimer      < source = "TimerReal"; >;
-uniform float fFrameTime  < source = "TimingsReal"; >;
+uniform int iFrameCount < source = "framecount"; >;
 
 // <---- UI ---->
 
@@ -293,7 +288,7 @@ uniform float fBaseStridePx <
     ui_label = "Base Stride (px)";
     ui_min = 1; ui_max = 64;
     ui_step = 1;
-> = 16;
+> = 4;
 
 uniform float fSpreadExp <
     ui_type = "slider";
@@ -301,7 +296,7 @@ uniform float fSpreadExp <
     ui_label = "Spread Exponent";
     ui_min = 0.0; ui_max = 3.0;
     ui_step = 0.01;
-> = 2.5;
+> = 2.0;
 
 uniform float fStrideJitter <
     ui_type = "slider";
@@ -309,7 +304,7 @@ uniform float fStrideJitter <
     ui_label = "Stride Jitter";
     ui_min = 0; ui_max = 1;
     ui_step = 0.01;
-> = 0.66;
+> = 0.5;
 
 uniform float fMaxSampleDistPx <
     ui_type = "slider";
@@ -558,17 +553,16 @@ float rawZToLinear01(float raw_z)
 float3 uvzToWorld(float2 uv, float raw_z)
 {
     float4 pos_s = float4((uv * 2 - 1) * float2(1, -1) * raw_z, raw_z, 1);
-    float4 pos = mul(transpose(fInvViewProjMatrixJit), pos_s);
+    float4 pos = mul(fInvViewProjMatrix, pos_s);
     return pos.xyz / pos.w;
 }
 float3 uvzToView(float2 uv, float raw_z)
 {
-    float4x4 inv_proj = mul(fInvViewProjMatrixJit, fViewMatrix);
-    float4 pos_view = mul(transpose(inv_proj), float4((uv * 2 - 1) * float2(1, -1) * raw_z, raw_z, 1));
+    float4 pos_view = mul(fInvProjMatrix, float4((uv * 2 - 1) * float2(1, -1) * raw_z, raw_z, 1));
     return pos_view.xyz / pos_view.w;
 }
 float3 viewToUvz(float3 pos){
-    float4 pos_clip = mul(transpose(fProjMatrixJit), float4(pos, 1));
+    float4 pos_clip = mul(fProjMatrix, float4(pos, 1));
     pos_clip.xyz /= pos_clip.w;
     pos_clip.xy = (pos_clip.xy / pos_clip.z * float2(1, -1) + 1) * 0.5;
     return pos_clip.xyz;
@@ -833,7 +827,7 @@ void PS_GI(
 
     const float3 pos_w = uvzToWorld(uv, raw_z);
     const float3 dir_w_view = normalize(fCamPos - pos_w);
-    const float3 normal_w = mul(fViewMatrix, float4(normal_v * float3(1, -1, 1), 1)).xyz;
+    const float3 normal_w = mul(transpose(fViewMatrix), float4(normal_v * float3(1, -1, 1), 1)).xyz;
 
     [branch]
     if(isWeapon(pos_v.z) || isSky(pos_v.z))  // leave sky alone
@@ -972,7 +966,7 @@ void PS_GI(
                 [branch]
                 if(valid_bits)
                 {
-                    const float3 normal_w_sample = mul(fViewMatrix, float4(geo_sample.xyz * float3(1, -1, 1), 1)).xyz;
+                    const float3 normal_w_sample = mul(transpose(fViewMatrix), float4(geo_sample.xyz * float3(1, -1, 1), 1)).xyz;
                     float3 radiance_sample = tex2Dlod(samp_blur_radiance, float4(uv_sample, mip_level, 0)).rgb;
                     radiance_sample *= countbits(valid_bits) / (float)BITMASK_SIZE;
                     radiance_sample *= dot(normal_w, dir_w_front);
@@ -1168,6 +1162,7 @@ void PS_Display(
     }
     else if(iViewMode == 1)  // Depth
     {
+        // float z = uvzToView(uv, geo.w).z;
         float z = rawZToLinear01(geo.w) * fFarPlane;
         if(isWeapon(z))
             color = float3(z / fZRange.x, 0, 0);
